@@ -1,0 +1,26 @@
+name:                haskai-cli
+version:             0.1.0.0
+github:              "utomore/haskai-cli" # 這是選填，hpack 會自動生成相關連結
+license:             MIT
+author:              "utomore"
+maintainer:          "utomore@outlook.com"
+copyright:           "2026 utomore"
+
+extra-source-files:
+- CHANGELOG.md
+
+# 對應你的 common warnings
+ghc-options:
+- -Wall
+
+# 預設語言
+language: GHC2024
+
+dependencies:
+  - base >= 4.14 && < 5 # 建議稍微放寬，增加相容性
+
+executables:
+  haskai-cli:
+    main:                Main.hs
+    source-dirs:         app
+    # 如果有其他依賴可以單獨寫在這裡，或是寫在上面的全域 dependencies

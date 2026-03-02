@@ -1,0 +1,33 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.39.1.
+--
+-- see: https://github.com/sol/hpack
+
+name:           haskai-cli
+version:        0.1.0.0
+homepage:       https://github.com/utomore/haskai-cli#readme
+bug-reports:    https://github.com/utomore/haskai-cli/issues
+author:         utomore
+maintainer:     utomore@outlook.com
+copyright:      2026 utomore
+license:        MIT
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    CHANGELOG.md
+
+source-repository head
+  type: git
+  location: https://github.com/utomore/haskai-cli
+
+executable haskai-cli
+  main-is: Main.hs
+  other-modules:
+      Paths_haskai_cli
+  hs-source-dirs:
+      app
+  ghc-options: -Wall
+  build-depends:
+      base >=4.14 && <5
+  default-language: GHC2024

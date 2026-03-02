@@ -1,0 +1,4 @@
+packages: .
+
+-- 指定這個專案要使用的編譯器版本
+with-compiler: ghc-9.12.2

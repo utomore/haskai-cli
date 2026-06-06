@@ -16,7 +16,7 @@ import System.Console.Haskeline (runInputT, defaultSettings, Settings(..), compl
 import System.Console.ANSI
 import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>))
-import System.IO (hFlush, stdout)
+import System.IO (hFlush, stdout, hSetBuffering, BufferMode(NoBuffering))
 import Data.List (isPrefixOf)
 import qualified Data.Text as T
 import Text.Read (readMaybe)
@@ -175,9 +175,8 @@ newSessionCmd nameInput = do
                                     , sessionHistory = []
                                     }
   modifyState (const newSessionsList)
-  liftIO $ do
-    saveSessions (sessionsFilePath config) (sessions newSessionsList)
-    putStrLn $ "Started new session: " ++ sName ++ " (" ++ newId ++ ")"
+  liftIO $ saveSessions (sessionsFilePath config) (sessions newSessionsList)
+  showSessionHistory
 
 loadSessionCmd :: String -> AppM ()
 loadSessionCmd input = do
@@ -191,9 +190,8 @@ loadSessionCmd input = do
                                  , sessionHistory = messages targetS
                                  }
       modifyState (const newState)
-      liftIO $ do
-        saveSessions (sessionsFilePath config) (sessions newState)
-        putStrLn $ "Loaded session: " ++ sessionName targetS
+      liftIO $ saveSessions (sessionsFilePath config) (sessions newState)
+      showSessionHistory
     Nothing -> do
       liftIO $ putStrLn $ "Error: Session not found. Usage: /session load <index_or_name>"
 
@@ -208,9 +206,8 @@ renameSessionCmd newName = do
           updatedSs = map (\s -> if sessionId s == activeId then s { sessionName = newName } else s) (sessions state)
           newState = state { sessions = updatedSs }
       modifyState (const newState)
-      liftIO $ do
-        saveSessions (sessionsFilePath config) updatedSs
-        putStrLn $ "Renamed current session to: " ++ newName
+      liftIO $ saveSessions (sessionsFilePath config) updatedSs
+      liftIO $ redrawLayout newName (selectedModel newState) (length (longTermMemories newState))
 
 deleteSessionCmd :: String -> AppM ()
 deleteSessionCmd input = do
@@ -232,16 +229,14 @@ deleteSessionCmd input = do
                                    , sessionHistory = messages fallbackS
                                    }
               modifyState (const newState)
-              liftIO $ do
-                saveSessions (sessionsFilePath config) newSs
-                putStrLn $ "Deleted current session and switched to: " ++ sessionName fallbackS
+              liftIO $ saveSessions (sessionsFilePath config) newSs
+              showSessionHistory
             [] -> return ()
           else do
             let newState = state { sessions = newSs }
             modifyState (const newState)
-            liftIO $ do
-              saveSessions (sessionsFilePath config) newSs
-              putStrLn $ "Deleted session: " ++ sessionName targetS
+            liftIO $ saveSessions (sessionsFilePath config) newSs
+            liftIO $ redrawLayout (currentSessionName newState) (selectedModel newState) (length (longTermMemories newState))
       Nothing -> do
         liftIO $ putStrLn "Error: Session not found. Usage: /session delete <index_or_name>"
 
@@ -258,9 +253,8 @@ forkSessionCmd nameInput = do
                                     , currentSessionId = newId
                                     }
   modifyState (const newSessionsList)
-  liftIO $ do
-    saveSessions (sessionsFilePath config) (sessions newSessionsList)
-    putStrLn $ "Forked session created and switched: " ++ sName ++ " (" ++ newId ++ ")"
+  liftIO $ saveSessions (sessionsFilePath config) (sessions newSessionsList)
+  showSessionHistory
 
 -- UI Layout drawing helpers
 getRowsOrDefault :: IO Int
@@ -270,21 +264,96 @@ getRowsOrDefault = do
     Just (rows, _) -> return rows
     Nothing        -> return 24
 
-initTerminalScreen :: IO ()
-initTerminalScreen = do
+-- Redraw the fixed header and separator lines without clearing scroll content
+redrawLayout :: String -> String -> Int -> IO ()
+redrawLayout sessionNameVal modelName numMemories = do
+  rows <- getRowsOrDefault
+  -- Header info bar (Rows 0 and 1, 0-indexed)
+  setCursorPosition 0 0
+  setSGR [SetColor Foreground Vivid Blue, SetConsoleIntensity BoldIntensity]
+  putStrLn "======================================================================"
+  putStr " HaskAI CLI "
+  setSGR [Reset]
+  putStr " | "
+  setSGR [SetColor Foreground Vivid Cyan]
+  putStr $ "Session: " ++ sessionNameVal
+  setSGR [Reset]
+  putStr " | "
+  setSGR [SetColor Foreground Vivid Cyan]
+  putStr $ "Model: " ++ modelName
+  setSGR [Reset]
+  putStr " | "
+  setSGR [SetColor Foreground Vivid Green]
+  putStr $ "Memories: " ++ show numMemories
+  setSGR [Reset]
+  putStrLn " | Type /help for help"
+  
+  -- Top Separator at Row 2 (0-indexed)
+  setCursorPosition 2 0
+  setSGR [SetColor Foreground Vivid Blue]
+  putStrLn "──────────────────────────────────────────────────────────────────────"
+  setSGR [Reset]
+  
+  -- Bottom Separator at Row rows - 2 (0-indexed)
+  setCursorPosition (rows - 2) 0
+  setSGR [SetColor Foreground Vivid Blue]
+  putStr "──────────────────────────────────────────────────────────────────────"
+  setSGR [Reset]
+  hFlush stdout
+
+initTerminalScreen :: String -> String -> Int -> IO ()
+initTerminalScreen sessionNameVal modelName numMemories = do
+  rows <- getRowsOrDefault
   clearScreen
   setCursorPosition 0 0
+  -- Clear the middle scroll area (Rows 3 to rows - 3)
+  mapM_ (\r -> setCursorPosition r 0 >> putStr "\ESC[2K") [3 .. rows - 3]
+  redrawLayout sessionNameVal modelName numMemories
+  -- Position cursor at prompt line (0-indexed: rows - 1)
+  setCursorPosition (rows - 1) 0
+  hFlush stdout
 
-redrawLayout :: AppM ()
-redrawLayout = do
+-- Clears screen, draws layout, and displays current session history inside the scroll region
+showSessionHistory :: AppM ()
+showSessionHistory = do
   state <- getState
+  rows <- liftIO getRowsOrDefault
+  let activeS = currentSessionName state
+      model = selectedModel state
+      memsCount = length (longTermMemories state)
   liftIO $ do
-    initTerminalScreen
-    setSGR [SetColor Foreground Vivid Yellow]
-    putStrLn "=============================================================="
-    putStrLn $ " HaskAI CLI | Model: " ++ selectedModel state ++ " | Active Session: " ++ currentSessionName state
-    putStrLn "=============================================================="
-    setSGR [Reset]
+    clearScreen
+    redrawLayout activeS model memsCount
+    -- Set scrolling region
+    putStr $ "\ESC[4;" ++ show (rows - 2) ++ "r"
+    -- Position cursor inside scrolling region at the bottom
+    setCursorPosition (rows - 3) 0
+    hFlush stdout
+  
+  -- Print messages in history
+  let history = sessionHistory state
+  liftIO $ do
+    mapM_ (\msg -> do
+      if role msg == "user"
+        then do
+          setSGR [SetColor Foreground Vivid Green]
+          putStr "User: "
+          setSGR [Reset]
+          putStrLn (T.unpack (content msg))
+        else if role msg == "assistant"
+          then do
+            setSGR [SetColor Foreground Vivid Cyan]
+            putStr "Assistant: "
+            setSGR [Reset]
+            putStrLn (T.unpack (content msg))
+          else return ()
+      ) history
+    -- Reset scrolling region
+    putStr "\ESC[r"
+    -- Clear and position cursor on prompt line
+    setCursorPosition (rows - 1) 0
+    putStr "\ESC[2K"
+    hFlush stdout
 
 -- Command interpreter
 handleCommand :: String -> AppM Bool
@@ -383,23 +452,57 @@ handleChat userText = do
       systemMsg = buildSystemMessage (longTermMemories state)
       allMessages = systemMsg : updatedHistory
 
+  rows <- liftIO getRowsOrDefault
+  let activeS = currentSessionName state
+      model = selectedModel state
+      memsCount = length (longTermMemories state)
+      promptStr = "haskai-cli [" ++ activeS ++ "]> "
+      promptCol = length promptStr
+
   liftIO $ do
-    setSGR [SetColor Foreground Vivid Cyan]
-    putStr "Assistant: "
+    -- 1. Redraw status headers and separators to fix the 1-line scroll caused by the Enter key
+    redrawLayout activeS model memsCount
+    
+    -- 2. Clear and display the prompt line (row rows - 1)
+    setCursorPosition (rows - 1) 0
+    putStr "\ESC[2K"
+    putStr promptStr
+    
+    -- 3. Set scrolling region to lines 4 to rows - 2
+    putStr $ "\ESC[4;" ++ show (rows - 2) ++ "r"
+    
+    -- 4. Position cursor inside the scrolling region at the bottom (rows - 3)
+    setCursorPosition (rows - 3) 0
+    
+    -- 5. Print User query
+    setSGR [SetColor Foreground Vivid Green]
+    putStr "User: "
     setSGR [Reset]
+    putStrLn (T.unpack userText)
     hFlush stdout
 
-  -- Stream chat from Ollama
-  rows <- liftIO getRowsOrDefault
-  streamResult <- liftIO $ streamChat config (selectedModel state) allMessages rows
-  liftIO $ putChar '\n'
+  -- Stream chat from Ollama, passing rows and promptCol for prompt-line spinner rendering
+  streamResult <- liftIO $ streamChat config model allMessages rows promptCol
+  
+  liftIO $ do
+    putChar '\n'
+    -- Reset scrolling region
+    putStr "\ESC[r"
+    
+    -- Clear and position cursor on prompt line
+    setCursorPosition (rows - 1) 0
+    putStr "\ESC[2K"
+    hFlush stdout
 
   case streamResult of
     Left errMsg -> do
       liftIO $ do
+        setCursorPosition (rows - 1) 0
+        putStr "\ESC[2K"
         setSGR [SetColor Foreground Vivid Red]
         putStrLn $ "Error calling LLM: " ++ errMsg
         setSGR [Reset]
+        hFlush stdout
     Right assistantText -> do
       let assistantMsg = Message "assistant" assistantText
           newState = state { sessionHistory = updatedHistory ++ [assistantMsg] }
@@ -411,8 +514,9 @@ handleChat userText = do
 loop :: AppM ()
 loop = do
   state <- getState
-  let prompt = "haskai-cli [" ++ currentSessionName state ++ "]> "
-  minput <- lift $ getInputLine prompt
+  rows <- liftIO getRowsOrDefault
+  let promptStr = "haskai-cli [" ++ currentSessionName state ++ "]> "
+  minput <- lift $ getInputLine promptStr
   case minput of
     Nothing -> liftIO $ putStrLn "\nGoodbye!"
     Just input -> do
@@ -421,7 +525,29 @@ loop = do
         then loop
         else if "/" `isPrefixOf` trimmed
           then do
+            state' <- getState
+            liftIO $ do
+              -- Redraw layout to fix the Enter scroll
+              redrawLayout (currentSessionName state') (selectedModel state') (length (longTermMemories state'))
+              -- Clear and draw prompt line
+              setCursorPosition (rows - 1) 0
+              putStr "\ESC[2K"
+              putStr promptStr
+              -- Set scrolling region for command output
+              putStr $ "\ESC[4;" ++ show (rows - 2) ++ "r"
+              setCursorPosition (rows - 3) 0
+              hFlush stdout
+              
             shouldContinue <- handleCommand trimmed
+            
+            liftIO $ do
+              -- Reset scrolling region
+              putStr "\ESC[r"
+              -- Clear prompt line and place cursor
+              setCursorPosition (rows - 1) 0
+              putStr "\ESC[2K"
+              hFlush stdout
+              
             if shouldContinue
               then loop
               else liftIO $ putStrLn "Goodbye!"
@@ -442,6 +568,7 @@ haskaiSettings = (defaultSettings :: Settings IO)
 -- Application Entry Point
 defaultMain :: IO ()
 defaultMain = do
+  hSetBuffering stdout NoBuffering
   cwd <- getCurrentDirectory
   let memoryPath = cwd </> ".config" </> "memory.json"
       sessionsPath = cwd </> ".config" </> "sessions.json"
@@ -449,6 +576,7 @@ defaultMain = do
 
   -- Ensure config directory exists
   ensureConfigDirExists memoryPath
+  ensureConfigDirExists sessionsPath
 
   -- Load long-term memories and sessions
   mems <- loadMemories memoryPath
@@ -473,8 +601,10 @@ defaultMain = do
   models <- fetchModels (ollamaBaseUrl config)
 
   selected <- selectModelMenu models
-  putStrLn $ "Initialized with model: " ++ selected
-  putStrLn "Type /help to see available commands."
+  
+  let activeSName = case filter (\s -> sessionId s == currentId) initialSessions of
+                      (s:_) -> sessionName s
+                      []    -> "Default Session"
 
   let initialState = AppState selected activeHistory mems currentId initialSessions
 
@@ -483,4 +613,4 @@ defaultMain = do
   let env = Env config stateRef
 
   -- Clear screen, show header, and run Haskeline prompt loop inside AppM
-  runInputT haskaiSettings (runReaderT (redrawLayout >> loop) env)
+  runInputT haskaiSettings (runReaderT (liftIO (initTerminalScreen activeSName selected (length mems)) >> loop) env)

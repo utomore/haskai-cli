@@ -113,45 +113,45 @@ instance FromJSON ChatCompletionChunk where
 
 -- Stream chat completion and print chunks in real-time
 -- Start a background thread to display a thinking spinner on the prompt line
-startSpinner :: Int -> IO ThreadId
-startSpinner rows = forkIO spinnerLoop
+startSpinner :: Int -> Int -> IO ThreadId
+startSpinner rows promptCol = forkIO spinnerLoop
   where
     frames :: [String]
     frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
     spinnerLoop :: IO ()
     spinnerLoop = do
       mapM_ (\f -> do
-        putStr "\ESC[s"                 -- Save cursor position
-        setCursorPosition (rows - 1) 12 -- Move cursor to prompt line after "haskai-cli> "
-        putStr "\ESC[K"                 -- Clear from cursor to end of line
+        putStr "\ESC[s"                      -- Save cursor position
+        setCursorPosition (rows - 1) promptCol -- Move cursor to prompt line after prompt
+        putStr "\ESC[K"                      -- Clear from cursor to end of line
         setSGR [SetColor Foreground Vivid Yellow]
         putStr (f ++ " Thinking...")
         setSGR [Reset]
-        putStr "\ESC[u"                 -- Restore cursor position
+        putStr "\ESC[u"                      -- Restore cursor position
         hFlush stdout
         threadDelay 80000 -- 80ms delay
         ) (cycle frames)
 
 -- Stop the thinking spinner and clear its line
-stopSpinner :: Int -> ThreadId -> IO ()
-stopSpinner rows tid = do
+stopSpinner :: Int -> Int -> ThreadId -> IO ()
+stopSpinner rows promptCol tid = do
   killThread tid
-  putStr "\ESC[s"                 -- Save cursor position
-  setCursorPosition (rows - 1) 12 -- Move cursor to prompt line after "haskai-cli> "
-  putStr "\ESC[K"                 -- Clear from cursor to end of line
-  putStr "\ESC[u"                 -- Restore cursor position
+  putStr "\ESC[s"                      -- Save cursor position
+  setCursorPosition (rows - 1) promptCol -- Move cursor to prompt line after prompt
+  putStr "\ESC[K"                      -- Clear from cursor to end of line
+  putStr "\ESC[u"                      -- Restore cursor position
   hFlush stdout
 
 -- Stream state tracking
 data StreamState = StateInit | StateReasoning | StateContent deriving (Show, Eq)
 
 -- Stream chat completion and print chunks in real-time
-streamChat :: Config -> String -> [Message] -> Int -> IO (Either String Text)
-streamChat config model msgs rows = do
+streamChat :: Config -> String -> [Message] -> Int -> Int -> IO (Either String Text)
+streamChat config model msgs rows promptCol = do
   manager <- newManager defaultManagerSettings
   let url = ollamaBaseUrl config ++ "/v1/chat/completions"
   
-  spinnerTid <- startSpinner rows
+  spinnerTid <- startSpinner rows promptCol
   
   let action = do
         initialRequest <- parseRequest url
@@ -167,7 +167,7 @@ streamChat config model msgs rows = do
           if statusCodeVal /= 200
             then return (Left $ "HTTP error code: " ++ show statusCodeVal)
             else do
-              stopSpinner rows spinnerTid
+              stopSpinner rows promptCol spinnerTid
               
               setSGR [SetColor Foreground Vivid Cyan]
               putStr "Assistant: "
@@ -177,7 +177,7 @@ streamChat config model msgs rows = do
               accumulatedText <- processStream (responseBody response) B.empty StateInit T.empty
               return (Right accumulatedText)
 
-  result <- try action `finally` stopSpinner rows spinnerTid
+  result <- try action `finally` stopSpinner rows promptCol spinnerTid
   case result of
     Left (err :: SomeException) -> return (Left $ show err)
     Right val -> return val

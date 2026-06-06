@@ -1,0 +1,57 @@
+cabal-version:      2.4
+name:               haskai-cli
+version:            0.1.0.0
+synopsis:           An interactive AI CLI tool with memory management using local Ollama.
+license:            MIT
+author:             Che
+category:           Development
+build-type:         Simple
+
+library
+    exposed-modules:  Types
+                      Memory
+                      Ollama
+                      Lib
+    build-depends:    base >= 4.14 && < 5,
+                      haskeline,
+                      ansi-terminal,
+                      http-client,
+                      http-client-tls,
+                      http-types,
+                      aeson,
+                      text,
+                      bytestring,
+                      directory,
+                      filepath,
+                      transformers,
+                      mtl,
+                      time
+    hs-source-dirs:   src
+    default-language: Haskell2010
+    ghc-options:      -Wall -threaded
+
+executable haskai-cli
+    main-is:          Main.hs
+    build-depends:    base >= 4.14 && < 5,
+                      haskai-cli
+    hs-source-dirs:   app
+    default-language: Haskell2010
+    ghc-options:      -Wall -threaded
+
+test-suite haskai-cli-test
+    type:             exitcode-stdio-1.0
+    main-is:          Spec.hs
+    other-modules:    MainSpec
+                      OllamaSpec
+    build-depends:    base >= 4.14 && < 5,
+                      haskai-cli,
+                      hspec,
+                      QuickCheck,
+                      aeson,
+                      text,
+                      bytestring,
+                      time
+    build-tool-depends: hspec-discover:hspec-discover
+    hs-source-dirs:   test
+    default-language: Haskell2010
+    ghc-options:      -Wall -threaded

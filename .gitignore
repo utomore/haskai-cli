@@ -1,0 +1,22 @@
+# Cabal build outputs
+dist-newstyle/
+dist/
+
+# GHC compilation files
+*.o
+*.hi
+*.dyn_o
+*.dyn_hi
+*.chi
+*.chs.h
+
+# Project-local memory and config files
+.config/
+.config/memory.json
+
+# IDE files
+.hie/
+.stack-work/
+.ghc.environment.*
+.cabal-sandbox/
+cabal.sandbox.config

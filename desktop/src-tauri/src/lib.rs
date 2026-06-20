@@ -12,19 +12,39 @@ struct HaskellProcess {
 
 struct AppState(Mutex<Option<HaskellProcess>>);
 
+const SERVER_CABAL_REL: &str =
+    "dist-newstyle/build/x86_64-windows/ghc-9.14.1/haskai-cli-0.1.0.0\
+     /x/haskai-server/build/haskai-server/haskai-server.exe";
+
 fn haskell_binary_path() -> String {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_default();
 
-    let project_root = std::env::current_dir().unwrap_or_default();
+    // Walk up from desktop/src-tauri/target/debug/ to project root
+    let project_root_from_exe = exe_dir
+        .ancestors()
+        .find(|p| p.join("haskai-cli.cabal").exists())
+        .map(|p| p.to_path_buf());
 
-    let candidates = [
+    // Also try current_dir and its parents
+    let project_root_from_cwd = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| {
+            cwd.ancestors()
+                .find(|p| p.join("haskai-cli.cabal").exists())
+                .map(|p| p.to_path_buf())
+        });
+
+    let mut candidates: Vec<std::path::PathBuf> = vec![
         exe_dir.join("haskai-server.exe"),
         exe_dir.join("haskai-server"),
-        project_root.join("dist-newstyle/build/x86_64-windows/ghc-9.14.1/haskai-cli-0.1.0.0/x/haskai-server/build/haskai-server/haskai-server.exe"),
     ];
+
+    for root in [project_root_from_exe, project_root_from_cwd].into_iter().flatten() {
+        candidates.push(root.join(SERVER_CABAL_REL));
+    }
 
     for c in &candidates {
         if c.exists() {

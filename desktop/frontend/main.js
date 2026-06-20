@@ -1,4 +1,7 @@
-const { invoke } = window.__TAURI__.core;
+// invoke is resolved lazily after Tauri injects window.__TAURI__
+function invoke(cmd, args) {
+  return window.__TAURI__.core.invoke(cmd, args);
+}
 
 // ── DOM refs ──────────────────────────────────────────────────────────────
 const messagesEl  = document.getElementById('messages');
@@ -37,11 +40,11 @@ function setStatus(state) {
 }
 
 // ── Message rendering ─────────────────────────────────────────────────────
-function appendMsg(cls, text, dataItems) {
+function appendMsg(cls, text, dataItems, dataType) {
   const div = document.createElement('div');
   div.className = `msg ${cls}`;
   div.textContent = text;
-  if (dataItems) div.appendChild(renderDataList(dataItems, cls));
+  if (dataItems) div.appendChild(renderDataList(dataItems, dataType ?? cls));
   messagesEl.appendChild(div);
   messagesEl.scrollTop = messagesEl.scrollHeight;
   return div;
@@ -108,18 +111,17 @@ function handleResponse(resp, thinkingEl) {
       setTimeout(() => setStatus('idle'), 3000);
       return;
     case 'memories':
-      appendMsg('info', '📋 Memories' + (data?.length ? ` (${data.length})` : ''), data);
+      appendMsg('info', '📋 Memories' + (data?.length ? ` (${data.length})` : ''), data, 'memories');
       break;
     case 'sessions':
-      appendMsg('info', '📂 Sessions' + (data?.length ? ` (${data.length})` : ''), data);
-      // Update session chip from active session
+      appendMsg('info', '📂 Sessions' + (data?.length ? ` (${data.length})` : ''), data, 'sessions');
       if (data) {
         const active = data.find(s => s.active);
         if (active) chipSession.textContent = active.name;
       }
       break;
     case 'models':
-      appendMsg('info', '🤖 Models' + (data?.length ? ` (${data.length})` : ''), data);
+      appendMsg('info', '🤖 Models' + (data?.length ? ` (${data.length})` : ''), data, 'models');
       break;
     case 'exit':
       appendMsg('system', text);

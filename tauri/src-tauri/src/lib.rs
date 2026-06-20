@@ -1,8 +1,8 @@
 use std::process::Stdio;
-use std::sync::Mutex;
 use tauri::State;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::sync::Mutex;
 
 struct HaskellProcess {
     stdin: ChildStdin,
@@ -13,7 +13,6 @@ struct HaskellProcess {
 struct AppState(Mutex<Option<HaskellProcess>>);
 
 fn haskell_binary_path() -> String {
-    // Look for the compiled Haskell binary next to the Tauri executable
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
@@ -54,14 +53,12 @@ async fn spawn_haskell() -> Result<HaskellProcess, String> {
 
 #[tauri::command]
 async fn chat(message: String, state: State<'_, AppState>) -> Result<String, String> {
-    // Serialize the request as a single JSON line
     let request = serde_json::json!({ "message": message });
     let mut line = serde_json::to_string(&request).map_err(|e| e.to_string())?;
     line.push('\n');
 
-    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
+    let mut guard = state.0.lock().await;
 
-    // Lazily spawn the Haskell process
     if guard.is_none() {
         *guard = Some(spawn_haskell().await?);
     }

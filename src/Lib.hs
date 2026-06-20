@@ -3,6 +3,7 @@
 module Lib
   ( defaultMain
   , buildSystemMessage
+  , parseCommand
   , parseSessionIndexOrName
   , currentSessionName
   , syncActiveSession
@@ -97,6 +98,57 @@ getFormattedTime fmt = do
   now <- getCurrentTime
   tz  <- getCurrentTimeZone
   return $ formatTime defaultTimeLocale fmt (utcToLocalTime tz now)
+
+-- ---------------------------------------------------------------------------
+-- Command parser (Phase 3)
+-- ---------------------------------------------------------------------------
+
+-- | Convert raw user input (a slash command string) into a typed Command.
+-- Returns Left with a human-readable error message on bad input.
+parseCommand :: T.Text -> Either String Command
+parseCommand raw =
+  let str = T.unpack (T.strip raw)
+  in case str of
+    "/exit"           -> Right CmdExit
+    "/quit"           -> Right CmdExit
+    "/help"           -> Right CmdHelp
+    "/memories"       -> Right CmdMemories
+    "/remember"       -> Left "Please specify a fact. Usage: /remember <fact>"
+    "/forget"         -> Left "Please specify the memory index. Usage: /forget <index>"
+    "/session list"   -> Right CmdSessionList
+    "/session new"    -> Right (CmdSessionNew Nothing)
+    "/session load"   -> Left "Please specify a session. Usage: /session load <index_or_name>"
+    "/session rename" -> Left "Please specify a new name. Usage: /session rename <new_name>"
+    "/session delete" -> Left "Please specify a session. Usage: /session delete <index_or_name>"
+    "/session fork"   -> Right (CmdSessionFork Nothing)
+    _ | "/remember " `isPrefixOf` str ->
+            let fact = T.strip (T.pack (drop 10 str))
+            in if T.null fact
+                 then Left "Memory cannot be empty. Usage: /remember <fact>"
+                 else Right (CmdRemember fact)
+      | "/forget " `isPrefixOf` str ->
+            case readMaybe (drop 8 str) :: Maybe Int of
+              Just idx -> Right (CmdForget idx)
+              Nothing  -> Left "Invalid index. Usage: /forget <index>"
+      | "/session new " `isPrefixOf` str ->
+            let name = T.strip (T.pack (drop 12 str))
+            in Right (CmdSessionNew (if T.null name then Nothing else Just name))
+      | "/session load " `isPrefixOf` str ->
+            let arg = T.unpack (T.strip (T.pack (drop 14 str)))
+            in Right (CmdSessionLoad arg)
+      | "/session rename " `isPrefixOf` str ->
+            let arg = T.unpack (T.strip (T.pack (drop 16 str)))
+            in if null arg
+                 then Left "Name cannot be empty. Usage: /session rename <new_name>"
+                 else Right (CmdSessionRename arg)
+      | "/session delete " `isPrefixOf` str ->
+            let arg = T.unpack (T.strip (T.pack (drop 16 str)))
+            in Right (CmdSessionDelete arg)
+      | "/session fork " `isPrefixOf` str ->
+            let name = T.strip (T.pack (drop 14 str))
+            in Right (CmdSessionFork (if T.null name then Nothing else Just name))
+      | otherwise ->
+            Left ("Unknown command: " ++ str ++ ". Type /help for assistance.")
 
 -- ---------------------------------------------------------------------------
 -- Model selection menu
@@ -389,83 +441,58 @@ showSessionHistory = do
     hFlush stdout
 
 -- ---------------------------------------------------------------------------
--- Command handler
+-- Command handler (Phase 3) — pattern-matches on typed Command
 -- ---------------------------------------------------------------------------
 
-handleCommand :: String -> AppM Bool
-handleCommand cmd
-  | cmd == "/exit" || cmd == "/quit" = return False
-  | cmd == "/help" = liftIO printHelp >> return True
-  | cmd == "/memories" = do
-      state <- getState
-      liftIO $ printMemories (longTermMemories state)
-      return True
-  | cmd == "/remember" = do
-      liftIO $ putStrLn "Error: Please specify a fact to remember. Usage: /remember <fact>"
-      return True
-  | "/remember " `isPrefixOf` cmd = do
-      config <- getConfig
-      state  <- getState
-      let fact = T.strip $ T.pack $ drop 10 cmd
-      if T.null fact
-        then liftIO $ putStrLn "Error: Memory cannot be empty."
-        else do
-          let newMems = longTermMemories state ++ [fact]
-          modifyState (\s -> s { longTermMemories = newMems })
-          liftIO $ do
-            saveMemories (memoryFilePath config) newMems
-            putStrLn "Memory saved!"
-      return True
-  | cmd == "/forget" = do
-      liftIO $ putStrLn "Error: Please specify the memory index to forget. Usage: /forget <index>"
-      return True
-  | "/forget " `isPrefixOf` cmd = do
-      config <- getConfig
-      state  <- getState
-      let indexStr = drop 8 cmd
-      case readMaybe indexStr :: Maybe Int of
-        Just idx -> do
-          let mems = longTermMemories state
-          if idx >= 1 && idx <= length mems
-            then do
-              let (left, right) = splitAt (idx - 1) mems
-                  newMems = left ++ drop 1 right
-              modifyState (\s -> s { longTermMemories = newMems })
-              liftIO $ do
-                saveMemories (memoryFilePath config) newMems
-                putStrLn $ "Memory [" ++ show idx ++ "] forgotten."
-            else liftIO $ putStrLn $ "Error: Index out of range. Valid range: 1 to " ++ show (length mems)
-        Nothing -> liftIO $ putStrLn "Error: Invalid index. Usage: /forget <index>"
-      return True
-  | cmd == "/session list" = listSessionsCmd >> return True
-  | "/session new" `isPrefixOf` cmd = do
-      let nameInput = T.unpack $ T.strip $ T.pack $ drop 12 cmd
-      newSessionCmd nameInput >> return True
-  | "/session load " `isPrefixOf` cmd = do
-      let nameInput = T.unpack $ T.strip $ T.pack $ drop 14 cmd
-      loadSessionCmd nameInput >> return True
-  | cmd == "/session load" = do
-      liftIO $ putStrLn "Error: Please specify the session index or name. Usage: /session load <index_or_name>"
-      return True
-  | "/session rename " `isPrefixOf` cmd = do
-      let nameInput = T.unpack $ T.strip $ T.pack $ drop 16 cmd
-      renameSessionCmd nameInput >> return True
-  | cmd == "/session rename" = do
-      liftIO $ putStrLn "Error: Please specify the new session name. Usage: /session rename <new_name>"
-      return True
-  | "/session delete " `isPrefixOf` cmd = do
-      let nameInput = T.unpack $ T.strip $ T.pack $ drop 16 cmd
-      deleteSessionCmd nameInput >> return True
-  | cmd == "/session delete" = do
-      liftIO $ putStrLn "Error: Please specify the session to delete. Usage: /session delete <index_or_name>"
-      return True
-  | "/session fork " `isPrefixOf` cmd = do
-      let nameInput = T.unpack $ T.strip $ T.pack $ drop 14 cmd
-      forkSessionCmd nameInput >> return True
-  | cmd == "/session fork" = forkSessionCmd "" >> return True
-  | otherwise = do
-      liftIO $ putStrLn $ "Unknown command: " ++ cmd ++ ". Type /help for assistance."
-      return True
+-- | Execute a parsed Command. Returns False only for CmdExit.
+handleCommand :: Command -> AppM Bool
+handleCommand CmdExit = return False
+
+handleCommand CmdHelp = liftIO printHelp >> return True
+
+handleCommand CmdMemories = do
+  state <- getState
+  liftIO $ printMemories (longTermMemories state)
+  return True
+
+handleCommand (CmdRemember fact) = do
+  config <- getConfig
+  state  <- getState
+  let newMems = longTermMemories state ++ [fact]
+  modifyState (\s -> s { longTermMemories = newMems })
+  liftIO $ do
+    saveMemories (memoryFilePath config) newMems
+    putStrLn "Memory saved!"
+  return True
+
+handleCommand (CmdForget idx) = do
+  config <- getConfig
+  state  <- getState
+  let mems = longTermMemories state
+  if idx >= 1 && idx <= length mems
+    then do
+      let (left, right) = splitAt (idx - 1) mems
+          newMems = left ++ drop 1 right
+      modifyState (\s -> s { longTermMemories = newMems })
+      liftIO $ do
+        saveMemories (memoryFilePath config) newMems
+        putStrLn $ "Memory [" ++ show idx ++ "] forgotten."
+    else liftIO $ putStrLn $ "Error: Index out of range. Valid range: 1 to " ++ show (length mems)
+  return True
+
+handleCommand CmdSessionList = listSessionsCmd >> return True
+
+handleCommand (CmdSessionNew mName) =
+  newSessionCmd (maybe "" T.unpack mName) >> return True
+
+handleCommand (CmdSessionLoad arg) = loadSessionCmd arg >> return True
+
+handleCommand (CmdSessionRename name) = renameSessionCmd name >> return True
+
+handleCommand (CmdSessionDelete arg) = deleteSessionCmd arg >> return True
+
+handleCommand (CmdSessionFork mName) =
+  forkSessionCmd (maybe "" T.unpack mName) >> return True
 
 -- ---------------------------------------------------------------------------
 -- Chat handler
@@ -553,13 +580,23 @@ loop = do
               putStr $ "\ESC[4;" ++ show (rows - 2) ++ "r"
               setCursorPosition (rows - 3) 0
               hFlush stdout
-            shouldContinue <- handleCommand trimmed
-            liftIO $ do
-              putStr "\ESC[r"
-              setCursorPosition (rows - 1) 0
-              putStr "\ESC[2K"
-              hFlush stdout
-            if shouldContinue then loop else liftIO $ putStrLn "Goodbye!"
+            case parseCommand (T.pack trimmed) of
+              Left errMsg -> do
+                liftIO $ do
+                  putStrLn errMsg
+                  putStr "\ESC[r"
+                  setCursorPosition (rows - 1) 0
+                  putStr "\ESC[2K"
+                  hFlush stdout
+                loop
+              Right cmd -> do
+                shouldContinue <- handleCommand cmd
+                liftIO $ do
+                  putStr "\ESC[r"
+                  setCursorPosition (rows - 1) 0
+                  putStr "\ESC[2K"
+                  hFlush stdout
+                if shouldContinue then loop else liftIO $ putStrLn "Goodbye!"
           else do
             handleChat (T.pack trimmed)
             loop

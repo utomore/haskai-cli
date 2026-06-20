@@ -1,9 +1,11 @@
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Types where
 
 import GHC.Generics (Generic)
-import Data.Aeson (ToJSON(..), FromJSON(..), toJSON, parseJSON)
+import Data.Aeson (ToJSON(..), FromJSON(..), toJSON, parseJSON, (.=), (.:), (.:?))
+import qualified Data.Aeson as Aeson
 import Data.Text (Text)
 import Data.IORef (IORef)
 import Control.Monad.Trans.Reader (ReaderT)
@@ -57,13 +59,62 @@ data ModelBackend
 -- Core domain types
 -- ---------------------------------------------------------------------------
 
-data Message = Message
-  { role    :: Text
-  , content :: Text
+data FunctionCall = FunctionCall
+  { fcName      :: Text
+  , fcArguments :: Text  -- JSON-formatted arguments string
   } deriving (Show, Eq, Generic)
 
-instance ToJSON Message
-instance FromJSON Message
+instance ToJSON FunctionCall where
+  toJSON fc = Aeson.object
+    [ "name"      .= fcName fc
+    , "arguments" .= fcArguments fc
+    ]
+
+instance FromJSON FunctionCall where
+  parseJSON = Aeson.withObject "FunctionCall" $ \v ->
+    FunctionCall <$> v .: "name"
+                 <*> v .: "arguments"
+
+data ToolCall = ToolCall
+  { tcId       :: Text
+  , tcType     :: Text
+  , tcFunction :: FunctionCall
+  } deriving (Show, Eq, Generic)
+
+instance ToJSON ToolCall where
+  toJSON tc = Aeson.object
+    [ "id"       .= tcId tc
+    , "type"     .= tcType tc
+    , "function" .= tcFunction tc
+    ]
+
+instance FromJSON ToolCall where
+  parseJSON = Aeson.withObject "ToolCall" $ \v ->
+    ToolCall <$> v .: "id"
+             <*> v .: "type"
+             <*> v .: "function"
+
+data Message = Message
+  { role         :: Text
+  , content      :: Text
+  , tool_calls   :: Maybe [ToolCall]  -- LLM tool calling request
+  , tool_call_id :: Maybe Text        -- Tool response reference ID
+  } deriving (Show, Eq, Generic)
+
+instance ToJSON Message where
+  toJSON msg = Aeson.object $
+    [ "role"    .= role msg
+    , "content" .= content msg
+    ]
+    ++ maybe [] (\tcs -> ["tool_calls" .= tcs]) (tool_calls msg)
+    ++ maybe [] (\tcid -> ["tool_call_id" .= tcid]) (tool_call_id msg)
+
+instance FromJSON Message where
+  parseJSON = Aeson.withObject "Message" $ \v ->
+    Message <$> v .: "role"
+            <*> v .: "content"
+            <*> v .:? "tool_calls"
+            <*> v .:? "tool_call_id"
 
 data Session = Session
   { sessionId   :: SessionId
@@ -80,7 +131,17 @@ data AppState = AppState
   , longTermMemories :: [Text]
   , currentSessionId :: SessionId
   , sessions         :: [Session]
+  , loadedFile       :: Maybe (FilePath, Text)
   } deriving (Show, Eq)
+
+syncActiveSession :: AppState -> AppState
+syncActiveSession state =
+  let activeId  = currentSessionId state
+      history   = sessionHistory state
+      updatedSs = map (\s -> if sessionId s == activeId
+                               then s { messages = history }
+                               else s) (sessions state)
+  in state { sessions = updatedSs }
 
 -- ---------------------------------------------------------------------------
 -- Configuration (Phase 4) — no more magic numbers in source
@@ -113,6 +174,30 @@ data Command
   | CmdSessionRename String        -- /session rename <new_name>
   | CmdSessionDelete String        -- /session delete <index_or_name>
   | CmdSessionFork (Maybe Text)    -- /session fork [name]
+  | CmdRead FilePath (Maybe Text)  -- /read <file> [question]
+  | CmdRun String                  -- /run <cmd>
+  | CmdClear                       -- /clear
+  deriving (Show, Eq)
+
+-- ---------------------------------------------------------------------------
+-- CommandResult ADT
+-- ---------------------------------------------------------------------------
+
+data CommandResult
+  = ResExit
+  | ResHelp
+  | ResMemories [Text]
+  | ResRemember Text
+  | ResForget Int [Text]
+  | ResSessionList [Session] SessionId
+  | ResSessionNew SessionName SessionId
+  | ResSessionLoad SessionName SessionId
+  | ResSessionRename SessionName
+  | ResSessionDelete SessionName SessionId
+  | ResSessionFork SessionName SessionId
+  | ResRead FilePath
+  | ResRun String
+  | ResClear
   deriving (Show, Eq)
 
 -- ---------------------------------------------------------------------------
@@ -125,3 +210,6 @@ data Env = Env
   }
 
 type AppM = ReaderT Env (InputT IO)
+
+type AgentM a = ReaderT Env IO a
+

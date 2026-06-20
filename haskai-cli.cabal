@@ -39,6 +39,19 @@ executable haskai-cli
     default-language: Haskell2010
     ghc-options:      -Wall -threaded
 
+executable haskai-server
+    main-is:          Server.hs
+    build-depends:    base >= 4.14 && < 5,
+                      haskai-cli,
+                      aeson,
+                      text,
+                      bytestring,
+                      directory,
+                      filepath
+    hs-source-dirs:   app
+    default-language: Haskell2010
+    ghc-options:      -Wall -threaded
+
 test-suite haskai-cli-test
     type:             exitcode-stdio-1.0
     main-is:          Spec.hs

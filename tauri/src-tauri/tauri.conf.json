@@ -1,0 +1,29 @@
+{
+  "productName": "Haskai",
+  "version": "0.1.0",
+  "identifier": "com.antigravity.haskai",
+  "build": {
+    "frontendDist": "../frontend"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Haskai",
+        "width": 900,
+        "height": 680,
+        "minWidth": 600,
+        "minHeight": 400,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": []
+  }
+}

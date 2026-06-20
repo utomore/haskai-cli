@@ -5,6 +5,7 @@
 module Ollama
   ( fetchModels
   , streamChat
+  , fetchChatResponse
   , splitBytes
   , ModelItem(..)
   , ModelsResponse(..)
@@ -303,6 +304,72 @@ processLine state lineBytes = do
             Nothing -> return (state, T.empty, T.empty)
         Nothing -> return (state, T.empty, T.empty)
       else return (state, T.empty, T.empty)
+
+-- ---------------------------------------------------------------------------
+-- Silent chat (for server / GUI mode — no terminal output)
+-- ---------------------------------------------------------------------------
+
+-- | Like streamChat but collects the full response silently (no terminal I/O).
+fetchChatResponse :: Config -> ModelId -> [Message] -> IO (Either String Text)
+fetchChatResponse config (ModelId modelStr) msgs = do
+  let backend   = modelBackend config
+      url       = backendChatUrl backend
+      timeoutUs = httpTimeoutMicros config
+
+  (manager, extraHeaders) <- backendManagerAndHeaders backend
+
+  let action = do
+        initialRequest <- parseRequest url
+        let reqBody = ChatRequest modelStr msgs True
+            request = initialRequest
+              { method         = "POST"
+              , requestBody    = RequestBodyLBS (Aeson.encode reqBody)
+              , requestHeaders = [("Content-Type", "application/json")] ++ extraHeaders
+              , responseTimeout = responseTimeoutMicro timeoutUs
+              }
+        withResponse request manager $ \response -> do
+          let sc = statusCode (responseStatus response)
+          if sc /= 200
+            then return (Left $ "HTTP error: " ++ show sc)
+            else Right <$> collectStream (responseBody response) B.empty T.empty
+
+  result <- try action
+  case result of
+    Left (err :: SomeException) -> return (Left $ show err)
+    Right val                   -> return val
+
+collectStream :: BodyReader -> B.ByteString -> Text -> IO Text
+collectStream reader buffer acc = do
+  chunk <- reader
+  if B.null chunk
+    then do
+      extra <- collectFinalBuffer buffer
+      return (acc <> extra)
+    else do
+      let buf' = buffer <> chunk
+          linesList = splitBytes 10 buf'
+      case linesList of
+        [] -> collectStream reader B.empty acc
+        _  -> do
+          let (complete, leftover) = (init linesList, last linesList)
+          let extracted = foldMap extractContent complete
+          collectStream reader leftover (acc <> extracted)
+
+collectFinalBuffer :: B.ByteString -> IO Text
+collectFinalBuffer bs =
+  return $ foldMap extractContent (splitBytes 10 bs)
+
+extractContent :: B.ByteString -> Text
+extractContent lineBytes =
+  let lineText = T.strip (TE.decodeUtf8With lenientDecode lineBytes)
+  in case T.stripPrefix "data: " lineText of
+    Just "[DONE]"  -> T.empty
+    Just jsonText  ->
+      case Aeson.decode (BL.fromStrict (TE.encodeUtf8 jsonText)) of
+        Just chunk ->
+          foldMap (\d -> fromMaybe T.empty (deltaContent (choiceDelta d))) (choices chunk)
+        Nothing -> T.empty
+    _ -> T.empty
 
 -- ---------------------------------------------------------------------------
 -- Utility

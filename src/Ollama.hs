@@ -4,7 +4,10 @@
 
 module Ollama
   ( fetchModels
-  , streamChat
+  , fetchChatResponseRaw
+  , Tool(..)
+  , ToolFunction(..)
+  , toolsSchema
   , splitBytes
   , ModelItem(..)
   , ModelsResponse(..)
@@ -19,21 +22,14 @@ import Data.Aeson (FromJSON(..), ToJSON(..), (.:), (.:?), withObject)
 import qualified Data.Aeson as Aeson
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-import qualified Data.ByteString.Lazy as BL
-import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
+import qualified Data.ByteString as B
 import Data.Word (Word8)
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.HTTP.Types (Header)
 import Network.HTTP.Types.Status (statusCode)
-import Control.Exception (try, SomeException, finally)
-import System.IO (hFlush, stdout)
-import Data.Text.Encoding.Error (lenientDecode)
-import System.Console.ANSI (setSGR, SGR(..), ConsoleLayer(..), ColorIntensity(..), Color(..), setCursorPosition)
-import Control.Concurrent (forkIO, killThread, threadDelay, ThreadId)
-import Data.Maybe (fromMaybe)
+import Control.Exception (try, SomeException)
 
 -- ---------------------------------------------------------------------------
 -- /v1/models response types
@@ -74,21 +70,163 @@ fetchModels config = case modelBackend config of
       Right models              -> return models
 
 -- ---------------------------------------------------------------------------
--- Chat request / SSE response types
+-- Chat request / response types
 -- ---------------------------------------------------------------------------
+
+data Tool = Tool
+  { toolType     :: Text
+  , toolFunction :: ToolFunction
+  } deriving (Show, Eq, Generic)
+
+instance ToJSON Tool where
+  toJSON t = Aeson.object
+    [ "type"     Aeson..= toolType t
+    , "function" Aeson..= toolFunction t
+    ]
+
+instance FromJSON Tool where
+  parseJSON = withObject "Tool" $ \v ->
+    Tool <$> v .: "type"
+         <*> v .: "function"
+
+data ToolFunction = ToolFunction
+  { tfName        :: Text
+  , tfDescription :: Text
+  , tfParameters  :: Aeson.Value
+  } deriving (Show, Eq, Generic)
+
+instance ToJSON ToolFunction where
+  toJSON tf = Aeson.object
+    [ "name"        Aeson..= tfName tf
+    , "description" Aeson..= tfDescription tf
+    , "parameters"  Aeson..= tfParameters tf
+    ]
+
+instance FromJSON ToolFunction where
+  parseJSON = withObject "ToolFunction" $ \v ->
+    ToolFunction <$> v .: "name"
+                 <*> v .: "description"
+                 <*> v .: "parameters"
 
 data ChatRequest = ChatRequest
   { reqModel    :: String
   , reqMessages :: [Message]
   , reqStream   :: Bool
+  , reqTools    :: Maybe [Tool]
   } deriving (Show, Eq, Generic)
 
 instance ToJSON ChatRequest where
-  toJSON (ChatRequest m ms s) = Aeson.object
-    [ "model"    Aeson..= m
-    , "messages" Aeson..= ms
-    , "stream"   Aeson..= s
-    ]
+  toJSON cr = Aeson.object $
+    [ "model"    Aeson..= reqModel cr
+    , "messages" Aeson..= reqMessages cr
+    , "stream"   Aeson..= reqStream cr
+    ] ++ maybe [] (\ts -> ["tools" Aeson..= ts]) (reqTools cr)
+
+data ChatCompletionChoice = ChatCompletionChoice
+  { choiceMessage :: Message
+  } deriving (Show, Eq, Generic)
+
+instance FromJSON ChatCompletionChoice where
+  parseJSON = withObject "ChatCompletionChoice" $ \v ->
+    ChatCompletionChoice <$> v .: "message"
+
+data ChatCompletionResponse = ChatCompletionResponse
+  { respChoices :: [ChatCompletionChoice]
+  } deriving (Show, Eq, Generic)
+
+instance FromJSON ChatCompletionResponse where
+  parseJSON = withObject "ChatCompletionResponse" $ \v ->
+    ChatCompletionResponse <$> v .: "choices"
+
+toolsSchema :: [Tool]
+toolsSchema =
+  [ Tool "function" (ToolFunction "run_command" "Run a shell command on the local system and return the combined stdout/stderr output." runCommandParams)
+  , Tool "function" (ToolFunction "read_file" "Read the content of a file from the local filesystem." readFileParams)
+  ]
+  where
+    runCommandParams = Aeson.object
+      [ "type"       Aeson..= ("object" :: Text)
+      , "properties" Aeson..= Aeson.object
+          [ "command" Aeson..= Aeson.object
+              [ "type"        Aeson..= ("string" :: Text)
+              , "description" Aeson..= ("The exact shell command to execute." :: Text)
+              ]
+          ]
+      , "required"   Aeson..= (["command"] :: [Text])
+      ]
+    readFileParams = Aeson.object
+      [ "type"       Aeson..= ("object" :: Text)
+      , "properties" Aeson..= Aeson.object
+          [ "path" Aeson..= Aeson.object
+              [ "type"        Aeson..= ("string" :: Text)
+              , "description" Aeson..= ("The absolute or relative path to the file." :: Text)
+              ]
+          ]
+      , "required"   Aeson..= (["path"] :: [Text])
+      ]
+
+-- ---------------------------------------------------------------------------
+-- HTTP Helpers
+-- ---------------------------------------------------------------------------
+
+backendManagerAndHeaders :: ModelBackend -> IO (Manager, [Header])
+backendManagerAndHeaders (LocalOllama _) = do
+  mgr <- newManager defaultManagerSettings
+  return (mgr, [])
+backendManagerAndHeaders (RemoteOpenAI _ apiKey) = do
+  mgr <- newManager tlsManagerSettings
+  let authHeader = ("Authorization", BC.pack ("Bearer " ++ apiKey))
+  return (mgr, [authHeader])
+
+backendChatUrl :: ModelBackend -> String
+backendChatUrl (LocalOllama baseUrl)      = baseUrl ++ "/v1/chat/completions"
+backendChatUrl (RemoteOpenAI baseUrl _)   = baseUrl ++ "/chat/completions"
+
+-- | Call the LLM with structured request, supporting function calling schemas.
+fetchChatResponseRaw :: Config -> ModelId -> [Message] -> IO (Either String Message)
+fetchChatResponseRaw config (ModelId modelStr) msgs = do
+  let backend   = modelBackend config
+      url       = backendChatUrl backend
+      timeoutUs = httpTimeoutMicros config
+
+  (manager, extraHeaders) <- backendManagerAndHeaders backend
+
+  let action = do
+        initialRequest <- parseRequest url
+        let reqBody = ChatRequest modelStr msgs False (Just toolsSchema)
+            request = initialRequest
+              { method          = "POST"
+              , requestBody     = RequestBodyLBS (Aeson.encode reqBody)
+              , requestHeaders  = [("Content-Type", "application/json")] ++ extraHeaders
+              , responseTimeout = responseTimeoutMicro timeoutUs
+              }
+        resp <- httpLbs request manager
+        let sc = statusCode (responseStatus resp)
+        if sc /= 200
+          then return (Left $ "HTTP error: " ++ show sc)
+          else case Aeson.decode (responseBody resp) of
+            Just (ChatCompletionResponse (choice:_)) -> return (Right (choiceMessage choice))
+            _ -> return (Left "Failed to parse chat response JSON")
+
+  result <- try action
+  case result of
+    Left (err :: SomeException) -> return (Left $ NetworkError (show err))
+    Right val                   -> return val
+
+-- ---------------------------------------------------------------------------
+-- Backward compatible types and helpers for test suite
+-- ---------------------------------------------------------------------------
+
+splitBytes :: Word8 -> B.ByteString -> [B.ByteString]
+splitBytes w bs
+  | B.null bs = []
+  | otherwise = go bs
+  where
+    go xs =
+      let (prefix, suffix) = B.break (== w) xs
+      in if B.null suffix
+           then [prefix]
+           else prefix : go (B.drop 1 suffix)
 
 data ChoiceDelta = ChoiceDelta
   { deltaContent   :: Maybe Text
@@ -114,207 +252,3 @@ data ChatCompletionChunk = ChatCompletionChunk
 instance FromJSON ChatCompletionChunk where
   parseJSON = withObject "ChatCompletionChunk" $ \v ->
     ChatCompletionChunk <$> v .: "choices"
-
--- ---------------------------------------------------------------------------
--- Spinner
--- ---------------------------------------------------------------------------
-
-startSpinner :: Int -> Int -> Int -> IO ThreadId
-startSpinner rows promptCol delayMicros = forkIO spinnerLoop
-  where
-    frames :: [String]
-    frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-    spinnerLoop = mapM_ (\f -> do
-        putStr "\ESC[s"
-        setCursorPosition (rows - 1) promptCol
-        putStr "\ESC[K"
-        setSGR [SetColor Foreground Vivid Yellow]
-        putStr (f ++ " Thinking...")
-        setSGR [Reset]
-        putStr "\ESC[u"
-        hFlush stdout
-        threadDelay delayMicros
-        ) (cycle frames)
-
-stopSpinner :: Int -> Int -> ThreadId -> IO ()
-stopSpinner rows promptCol tid = do
-  killThread tid
-  putStr "\ESC[s"
-  setCursorPosition (rows - 1) promptCol
-  putStr "\ESC[K"
-  putStr "\ESC[u"
-  hFlush stdout
-
--- ---------------------------------------------------------------------------
--- Stream state
--- ---------------------------------------------------------------------------
-
-data StreamState = StateInit | StateReasoning | StateContent deriving (Show, Eq)
-
--- ---------------------------------------------------------------------------
--- streamChat
--- ---------------------------------------------------------------------------
-
--- | Build the HTTP manager and auth headers from the backend config.
-backendManagerAndHeaders :: ModelBackend -> IO (Manager, [Header])
-backendManagerAndHeaders (LocalOllama _) = do
-  mgr <- newManager defaultManagerSettings
-  return (mgr, [])
-backendManagerAndHeaders (RemoteOpenAI _ apiKey) = do
-  mgr <- newManager tlsManagerSettings
-  let authHeader = ("Authorization", BC.pack ("Bearer " ++ apiKey))
-  return (mgr, [authHeader])
-
--- | Base chat-completions URL for a backend.
-backendChatUrl :: ModelBackend -> String
-backendChatUrl (LocalOllama baseUrl)      = baseUrl ++ "/v1/chat/completions"
-backendChatUrl (RemoteOpenAI baseUrl _)   = baseUrl ++ "/chat/completions"
-
-streamChat :: Config -> ModelId -> [Message] -> Int -> Int -> IO (Either AppError Text)
-streamChat config (ModelId modelStr) msgs rows promptCol = do
-  let backend = modelBackend config
-      url     = backendChatUrl backend
-      timeoutUs = httpTimeoutMicros config
-      spinnerUs = spinnerDelayMicros config
-
-  (manager, extraHeaders) <- backendManagerAndHeaders backend
-  spinnerTid <- startSpinner rows promptCol spinnerUs
-
-  let action = do
-        initialRequest <- parseRequest url
-        let reqBody = ChatRequest modelStr msgs True
-            request = initialRequest
-              { method         = "POST"
-              , requestBody    = RequestBodyLBS (Aeson.encode reqBody)
-              , requestHeaders = [("Content-Type", "application/json")] ++ extraHeaders
-              , responseTimeout = responseTimeoutMicro timeoutUs
-              }
-        withResponse request manager $ \response -> do
-          let sc = statusCode (responseStatus response)
-          if sc /= 200
-            then return (Left $ HttpStatusError sc)
-            else do
-              stopSpinner rows promptCol spinnerTid
-              setSGR [SetColor Foreground Vivid Cyan]
-              putStr "Assistant: "
-              setSGR [Reset]
-              hFlush stdout
-              accText <- processStream (responseBody response) B.empty StateInit T.empty
-              return (Right accText)
-
-  result <- try action `finally` stopSpinner rows promptCol spinnerTid
-  case result of
-    Left (err :: SomeException) -> return (Left $ NetworkError (show err))
-    Right val                   -> return val
-
--- ---------------------------------------------------------------------------
--- Stream processing
--- ---------------------------------------------------------------------------
-
-processStream :: BodyReader -> B.ByteString -> StreamState -> Text -> IO Text
-processStream reader buffer state acc = do
-  chunk <- reader
-  if B.null chunk
-    then do
-      (_, contentText) <- processFinalBuffer state buffer
-      return (acc <> contentText)
-    else do
-      let newBuffer = buffer <> chunk
-      (leftover, nextState, _, contentText) <- processLines state newBuffer
-      processStream reader leftover nextState (acc <> contentText)
-
-processLines :: StreamState -> B.ByteString -> IO (B.ByteString, StreamState, Text, Text)
-processLines state bs = do
-  let linesList = splitBytes 10 bs
-  case linesList of
-    []        -> return (B.empty, state, T.empty, T.empty)
-    [lastLine] -> return (lastLine, state, T.empty, T.empty)
-    allLines  -> do
-      let foldLines currState [] = return (currState, T.empty, T.empty)
-          foldLines currState (l:ls) = do
-            (s1, r1, c1) <- processLine currState l
-            (s2, r2, c2) <- foldLines s1 ls
-            return (s2, r1 <> r2, c1 <> c2)
-      (nextState, rText, cText) <- foldLines state (init allLines)
-      return (last allLines, nextState, rText, cText)
-
-processFinalBuffer :: StreamState -> B.ByteString -> IO (StreamState, Text)
-processFinalBuffer state bs = do
-  let linesList = splitBytes 10 bs
-  case linesList of
-    [] -> return (state, T.empty)
-    allLines -> do
-      let foldLines currState [] = return (currState, T.empty)
-          foldLines currState (l:ls) = do
-            (s1, _, c1) <- processLine currState l
-            (s2, c2)    <- foldLines s1 ls
-            return (s2, c1 <> c2)
-      foldLines state allLines
-
-processLine :: StreamState -> B.ByteString -> IO (StreamState, Text, Text)
-processLine state lineBytes = do
-  let lineText = T.strip (TE.decodeUtf8With lenientDecode lineBytes)
-  if T.null lineText
-    then return (state, T.empty, T.empty)
-    else if T.isPrefixOf "data: " lineText
-      then case T.stripPrefix "data: " lineText of
-        Just "[DONE]"  -> return (state, T.empty, T.empty)
-        Just jsonText  ->
-          case Aeson.decode (BL.fromStrict (TE.encodeUtf8 jsonText)) of
-            Just chunk -> do
-              let deltas = map choiceDelta (choices chunk)
-              let processDelta s delta = do
-                    let rText = fromMaybe T.empty (deltaReasoning delta)
-                        cText = fromMaybe T.empty (deltaContent delta)
-                    if not (T.null rText)
-                      then do
-                        s' <- case s of
-                          StateInit -> do
-                            setSGR [SetColor Foreground Dull White]
-                            putStrLn "\n[Thinking]"
-                            setSGR [Reset]
-                            hFlush stdout
-                            return StateReasoning
-                          _ -> return s
-                        setSGR [SetColor Foreground Dull White]
-                        putStr (T.unpack rText)
-                        setSGR [Reset]
-                        hFlush stdout
-                        return (s', rText, T.empty)
-                      else if not (T.null cText)
-                        then do
-                          s' <- case s of
-                            StateReasoning -> do
-                              putStrLn ""
-                              hFlush stdout
-                              return StateContent
-                            StateInit    -> return StateContent
-                            StateContent -> return s
-                          putStr (T.unpack cText)
-                          hFlush stdout
-                          return (s', T.empty, cText)
-                        else return (s, T.empty, T.empty)
-              let foldDeltas currState [] = return (currState, T.empty, T.empty)
-                  foldDeltas currState (d:ds) = do
-                    (s1, r1, c1) <- processDelta currState d
-                    (s2, r2, c2) <- foldDeltas s1 ds
-                    return (s2, r1 <> r2, c1 <> c2)
-              foldDeltas state deltas
-            Nothing -> return (state, T.empty, T.empty)
-        Nothing -> return (state, T.empty, T.empty)
-      else return (state, T.empty, T.empty)
-
--- ---------------------------------------------------------------------------
--- Utility
--- ---------------------------------------------------------------------------
-
-splitBytes :: Word8 -> B.ByteString -> [B.ByteString]
-splitBytes w bs
-  | B.null bs = []
-  | otherwise = go bs
-  where
-    go xs =
-      let (prefix, suffix) = B.break (== w) xs
-      in if B.null suffix
-           then [prefix]
-           else prefix : go (B.drop 1 suffix)

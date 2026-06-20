@@ -13,6 +13,8 @@ library
                       Memory
                       Ollama
                       Lib
+                      Tool
+                      Controller
     build-depends:    base >= 4.14 && < 5,
                       haskeline,
                       ansi-terminal,
@@ -26,15 +28,60 @@ library
                       filepath,
                       transformers,
                       mtl,
-                      time
+                      time,
+                      process
     hs-source-dirs:   src
     default-language: Haskell2010
     ghc-options:      -Wall -threaded
 
+executable haskai-server
+    main-is:          Main.hs
+    build-depends:    base >= 4.14 && < 5,
+                      haskai-cli,
+                      aeson,
+                      text,
+                      bytestring,
+                      directory,
+                      filepath,
+                      time
+    hs-source-dirs:   desktop/server
+    default-language: Haskell2010
+    ghc-options:      -Wall -threaded
+
+executable haskai-tui
+    main-is:          Main.hs
+    build-depends:    base >= 4.14 && < 5,
+                      haskai-cli,
+                      brick,
+                      vty,
+                      vty-crossplatform,
+                      microlens,
+                      microlens-th,
+                      microlens-mtl,
+                      text,
+                      bytestring,
+                      directory,
+                      filepath,
+                      time,
+                      aeson,
+                      mtl,
+                      transformers,
+                      process
+    hs-source-dirs:   desktop-tui
+    default-language: Haskell2010
+    ghc-options:      -Wall -threaded -rtsopts -with-rtsopts=-N
+
 executable haskai-cli
     main-is:          Main.hs
     build-depends:    base >= 4.14 && < 5,
-                      haskai-cli
+                      haskai-cli,
+                      haskeline,
+                      ansi-terminal,
+                      directory,
+                      filepath,
+                      text,
+                      mtl,
+                      transformers
     hs-source-dirs:   app
     default-language: Haskell2010
     ghc-options:      -Wall -threaded

@@ -80,6 +80,31 @@ spec = do
     it "parses /session fork with a name" $
       parseCommand "/session fork backup" `shouldBe` Right (CmdSessionFork (Just "backup"))
 
+    -- Read / Run commands
+    it "parses /read without a question" $
+      parseCommand "/read src/Lib.hs" `shouldBe` Right (CmdRead "src/Lib.hs" Nothing)
+
+    it "parses /read with a question" $
+      parseCommand "/read src/Lib.hs explain the functions" `shouldBe` Right (CmdRead "src/Lib.hs" (Just "explain the functions"))
+
+    it "parses /read with double-quoted path and no question" $
+      parseCommand "/read \"my folder/file name.hs\"" `shouldBe` Right (CmdRead "my folder/file name.hs" Nothing)
+
+    it "parses /read with double-quoted path and a question" $
+      parseCommand "/read \"my folder/file name.hs\" explain this" `shouldBe` Right (CmdRead "my folder/file name.hs" (Just "explain this"))
+
+    it "errors on bare /read" $
+      parseCommand "/read" `shouldSatisfy` isLeft
+
+    it "parses /run with command" $
+      parseCommand "/run cabal test" `shouldBe` Right (CmdRun "cabal test")
+
+    it "errors on bare /run" $
+      parseCommand "/run" `shouldSatisfy` isLeft
+
+    it "parses /clear" $
+      parseCommand "/clear" `shouldBe` Right CmdClear
+
     -- Unknown command
     it "errors on unknown command" $
       parseCommand "/unknown" `shouldSatisfy` isLeft

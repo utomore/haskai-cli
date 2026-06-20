@@ -27,8 +27,8 @@ import qualified Data.Text.Encoding   as TE
 import qualified Data.Text.IO         as TIO
 import qualified Data.ByteString.Lazy as BL
 import           Data.IORef
-import           System.IO            (hSetBuffering, stdin, stdout, stderr,
-                                       BufferMode(..))
+import           System.IO            (hSetBuffering, hSetEncoding, stdin, stdout, stderr,
+                                       BufferMode(..), utf8)
 import           System.Directory     (getAppUserDataDirectory)
 import           System.FilePath      ((</>))
 import           Data.Time            (getCurrentTime, getCurrentTimeZone,
@@ -293,6 +293,9 @@ main = do
   hSetBuffering stdin  LineBuffering
   hSetBuffering stdout LineBuffering
   hSetBuffering stderr LineBuffering
+  hSetEncoding  stdin  utf8
+  hSetEncoding  stdout utf8
+  hSetEncoding  stderr utf8
 
   appDir <- getAppUserDataDirectory "haskai"
   let memPath  = appDir </> "memory.json"

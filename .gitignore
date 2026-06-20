@@ -15,7 +15,7 @@ dist/
 .config/memory.json
 
 # Tauri / Rust build outputs
-tauri/src-tauri/target/
+desktop/src-tauri/target/
 
 # IDE files
 .hie/

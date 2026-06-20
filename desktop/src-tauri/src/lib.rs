@@ -18,13 +18,12 @@ fn haskell_binary_path() -> String {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_default();
 
+    let project_root = std::env::current_dir().unwrap_or_default();
+
     let candidates = [
         exe_dir.join("haskai-server.exe"),
         exe_dir.join("haskai-server"),
-        // Development path: cabal build output
-        std::path::PathBuf::from(
-            "dist-newstyle/build/x86_64-windows/ghc-9.14.1/haskai-cli-0.1.0.0/x/haskai-server/build/haskai-server/haskai-server.exe"
-        ),
+        project_root.join("dist-newstyle/build/x86_64-windows/ghc-9.14.1/haskai-cli-0.1.0.0/x/haskai-server/build/haskai-server/haskai-server.exe"),
     ];
 
     for c in &candidates {
@@ -51,9 +50,11 @@ async fn spawn_haskell() -> Result<HaskellProcess, String> {
     Ok(HaskellProcess { stdin, stdout, _child: child })
 }
 
+/// Send any input (chat or /command) to the Haskell server.
+/// Returns the raw JSON response object from the server.
 #[tauri::command]
-async fn chat(message: String, state: State<'_, AppState>) -> Result<String, String> {
-    let request = serde_json::json!({ "message": message });
+async fn send_input(input: String, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let request = serde_json::json!({ "input": input });
     let mut line = serde_json::to_string(&request).map_err(|e| e.to_string())?;
     line.push('\n');
 
@@ -77,20 +78,20 @@ async fn chat(message: String, state: State<'_, AppState>) -> Result<String, Str
         .await
         .map_err(|e| format!("讀取失敗: {e}"))?;
 
-    let v: serde_json::Value =
-        serde_json::from_str(response_line.trim()).map_err(|e| e.to_string())?;
+    serde_json::from_str(response_line.trim()).map_err(|e| e.to_string())
+}
 
-    v["response"]
-        .as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| "回應格式錯誤".to_string())
+/// Get the list of available models from the Haskell server.
+#[tauri::command]
+async fn get_models(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    send_input("/models".to_string(), state).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState(Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![chat])
+        .invoke_handler(tauri::generate_handler![send_input, get_models])
         .run(tauri::generate_context!())
         .expect("Tauri 啟動失敗");
 }

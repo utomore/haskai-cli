@@ -210,7 +210,7 @@ fetchChatResponseRaw config (ModelId modelStr) msgs = do
 
   result <- try action
   case result of
-    Left (err :: SomeException) -> return (Left $ show err)
+    Left (err :: SomeException) -> return (Left $ NetworkError (show err))
     Right val                   -> return val
 
 -- ---------------------------------------------------------------------------

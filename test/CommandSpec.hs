@@ -120,7 +120,7 @@ spec = do
           (c:_) -> c /= '/' ==> parseCommand (T.pack input) `shouldSatisfy` isLeft
           []    -> property True
 
-    it "any /remember with a non-empty fact parses successfully" $
+    it "any /remember with a non-whitespace fact parses successfully" $
       property $ \(fact :: String) ->
         not (T.null (T.strip (T.pack fact))) ==>
           parseCommand (T.pack ("/remember " ++ fact)) `shouldSatisfy` isRight

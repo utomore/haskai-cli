@@ -201,6 +201,30 @@ data CommandResult
   deriving (Show, Eq)
 
 -- ---------------------------------------------------------------------------
+-- Structured error type (Type-driven error handling)
+-- ---------------------------------------------------------------------------
+
+-- | All failure modes the application can encounter.
+-- Use 'displayError' to render a human-readable message at the UI boundary.
+data AppError
+  = NetworkError String     -- ^ Connection or timeout failure
+  | HttpStatusError Int     -- ^ Non-200 HTTP response from the backend
+  | ParseError String       -- ^ JSON or SSE decoding failure
+  | StorageError String     -- ^ File read / write failure
+  | UserInputError String   -- ^ Malformed command arguments supplied by user
+  | UnknownCommand String   -- ^ Unrecognised slash-command
+  deriving (Show, Eq)
+
+-- | Render an 'AppError' as a one-line human-readable message.
+displayError :: AppError -> String
+displayError (NetworkError msg)   = "Network error: " ++ msg
+displayError (HttpStatusError sc) = "HTTP error: " ++ show sc
+displayError (ParseError msg)     = "Parse error: " ++ msg
+displayError (StorageError msg)   = "Storage error: " ++ msg
+displayError (UserInputError msg) = msg
+displayError (UnknownCommand cmd) = "Unknown command: " ++ cmd ++ ". Type /help for assistance."
+
+-- ---------------------------------------------------------------------------
 -- Application monad
 -- ---------------------------------------------------------------------------
 

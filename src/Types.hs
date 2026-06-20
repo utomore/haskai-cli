@@ -96,6 +96,26 @@ data Config = Config
   } deriving (Show, Eq)
 
 -- ---------------------------------------------------------------------------
+-- Command ADT (Phase 3)
+-- Represents every slash command the user can type.
+-- parseCommand (in Lib) produces one of these; handleCommand dispatches on it.
+-- ---------------------------------------------------------------------------
+
+data Command
+  = CmdExit                        -- /exit | /quit
+  | CmdHelp                        -- /help
+  | CmdMemories                    -- /memories
+  | CmdRemember Text               -- /remember <fact>
+  | CmdForget Int                  -- /forget <1-based index>
+  | CmdSessionList                 -- /session list
+  | CmdSessionNew (Maybe Text)     -- /session new [name]
+  | CmdSessionLoad String          -- /session load <index_or_name>
+  | CmdSessionRename String        -- /session rename <new_name>
+  | CmdSessionDelete String        -- /session delete <index_or_name>
+  | CmdSessionFork (Maybe Text)    -- /session fork [name]
+  deriving (Show, Eq)
+
+-- ---------------------------------------------------------------------------
 -- Application monad
 -- ---------------------------------------------------------------------------
 

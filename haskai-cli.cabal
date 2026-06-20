@@ -9,6 +9,7 @@ build-type:         Simple
 
 library
     exposed-modules:  Types
+                      AppConfig
                       Memory
                       Ollama
                       Lib

@@ -1,0 +1,19 @@
+# haskai-cli configuration
+# Copy this file to dev.config and edit as needed.
+# dev.config is ignored by git (.gitignore should include it).
+
+# --- Local Ollama backend (default) ---
+OLLAMA_URL=http://localhost:11434
+DEFAULT_MODEL=gemma4:12b
+
+# --- Tuning ---
+HTTP_TIMEOUT_SECONDS=120
+SPINNER_DELAY_MS=80
+
+# --- Remote backend: Google Gemini via OpenAI-compatible API ---
+# When GEMINI_API_KEY is set, the local Ollama backend is ignored.
+# Set DEFAULT_MODEL to any Gemini model name (e.g. gemini-2.0-flash).
+#
+# GEMINI_API_KEY=your-api-key-here
+# GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+# DEFAULT_MODEL=gemini-2.0-flash

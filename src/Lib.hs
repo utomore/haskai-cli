@@ -104,8 +104,8 @@ getFormattedTime fmt = do
 -- ---------------------------------------------------------------------------
 
 -- | Convert raw user input (a slash command string) into a typed Command.
--- Returns Left with a human-readable error message on bad input.
-parseCommand :: T.Text -> Either String Command
+-- Returns 'Left AppError' on bad input; callers render it with 'displayError'.
+parseCommand :: T.Text -> Either AppError Command
 parseCommand raw =
   let str = T.unpack (T.strip raw)
   in case str of
@@ -113,23 +113,23 @@ parseCommand raw =
     "/quit"           -> Right CmdExit
     "/help"           -> Right CmdHelp
     "/memories"       -> Right CmdMemories
-    "/remember"       -> Left "Please specify a fact. Usage: /remember <fact>"
-    "/forget"         -> Left "Please specify the memory index. Usage: /forget <index>"
+    "/remember"       -> Left (UserInputError "Please specify a fact. Usage: /remember <fact>")
+    "/forget"         -> Left (UserInputError "Please specify the memory index. Usage: /forget <index>")
     "/session list"   -> Right CmdSessionList
     "/session new"    -> Right (CmdSessionNew Nothing)
-    "/session load"   -> Left "Please specify a session. Usage: /session load <index_or_name>"
-    "/session rename" -> Left "Please specify a new name. Usage: /session rename <new_name>"
-    "/session delete" -> Left "Please specify a session. Usage: /session delete <index_or_name>"
+    "/session load"   -> Left (UserInputError "Please specify a session. Usage: /session load <index_or_name>")
+    "/session rename" -> Left (UserInputError "Please specify a new name. Usage: /session rename <new_name>")
+    "/session delete" -> Left (UserInputError "Please specify a session. Usage: /session delete <index_or_name>")
     "/session fork"   -> Right (CmdSessionFork Nothing)
     _ | "/remember " `isPrefixOf` str ->
             let fact = T.strip (T.pack (drop 10 str))
             in if T.null fact
-                 then Left "Memory cannot be empty. Usage: /remember <fact>"
+                 then Left (UserInputError "Memory cannot be empty. Usage: /remember <fact>")
                  else Right (CmdRemember fact)
       | "/forget " `isPrefixOf` str ->
             case readMaybe (drop 8 str) :: Maybe Int of
               Just idx -> Right (CmdForget idx)
-              Nothing  -> Left "Invalid index. Usage: /forget <index>"
+              Nothing  -> Left (UserInputError "Invalid index. Usage: /forget <index>")
       | "/session new " `isPrefixOf` str ->
             let name = T.strip (T.pack (drop 12 str))
             in Right (CmdSessionNew (if T.null name then Nothing else Just name))
@@ -139,7 +139,7 @@ parseCommand raw =
       | "/session rename " `isPrefixOf` str ->
             let arg = T.unpack (T.strip (T.pack (drop 16 str)))
             in if null arg
-                 then Left "Name cannot be empty. Usage: /session rename <new_name>"
+                 then Left (UserInputError "Name cannot be empty. Usage: /session rename <new_name>")
                  else Right (CmdSessionRename arg)
       | "/session delete " `isPrefixOf` str ->
             let arg = T.unpack (T.strip (T.pack (drop 16 str)))
@@ -148,7 +148,7 @@ parseCommand raw =
             let name = T.strip (T.pack (drop 14 str))
             in Right (CmdSessionFork (if T.null name then Nothing else Just name))
       | otherwise ->
-            Left ("Unknown command: " ++ str ++ ". Type /help for assistance.")
+            Left (UnknownCommand str)
 
 -- ---------------------------------------------------------------------------
 -- Model selection menu
@@ -537,11 +537,11 @@ handleChat userText = do
     hFlush stdout
 
   case streamResult of
-    Left errMsg -> liftIO $ do
+    Left err -> liftIO $ do
       setCursorPosition (rows - 1) 0
       putStr "\ESC[2K"
       setSGR [SetColor Foreground Vivid Red]
-      putStrLn $ "Error calling LLM: " ++ errMsg
+      putStrLn $ "Error calling LLM: " ++ displayError err
       setSGR [Reset]
       hFlush stdout
     Right assistantText -> do
@@ -581,9 +581,9 @@ loop = do
               setCursorPosition (rows - 3) 0
               hFlush stdout
             case parseCommand (T.pack trimmed) of
-              Left errMsg -> do
+              Left err -> do
                 liftIO $ do
-                  putStrLn errMsg
+                  putStrLn (displayError err)
                   putStr "\ESC[r"
                   setCursorPosition (rows - 1) 0
                   putStr "\ESC[2K"

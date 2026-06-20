@@ -170,7 +170,7 @@ backendChatUrl :: ModelBackend -> String
 backendChatUrl (LocalOllama baseUrl)      = baseUrl ++ "/v1/chat/completions"
 backendChatUrl (RemoteOpenAI baseUrl _)   = baseUrl ++ "/chat/completions"
 
-streamChat :: Config -> ModelId -> [Message] -> Int -> Int -> IO (Either String Text)
+streamChat :: Config -> ModelId -> [Message] -> Int -> Int -> IO (Either AppError Text)
 streamChat config (ModelId modelStr) msgs rows promptCol = do
   let backend = modelBackend config
       url     = backendChatUrl backend
@@ -192,7 +192,7 @@ streamChat config (ModelId modelStr) msgs rows promptCol = do
         withResponse request manager $ \response -> do
           let sc = statusCode (responseStatus response)
           if sc /= 200
-            then return (Left $ "HTTP error: " ++ show sc)
+            then return (Left $ HttpStatusError sc)
             else do
               stopSpinner rows promptCol spinnerTid
               setSGR [SetColor Foreground Vivid Cyan]
@@ -204,7 +204,7 @@ streamChat config (ModelId modelStr) msgs rows promptCol = do
 
   result <- try action `finally` stopSpinner rows promptCol spinnerTid
   case result of
-    Left (err :: SomeException) -> return (Left $ show err)
+    Left (err :: SomeException) -> return (Left $ NetworkError (show err))
     Right val                   -> return val
 
 -- ---------------------------------------------------------------------------

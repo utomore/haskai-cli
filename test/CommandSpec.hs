@@ -24,27 +24,9 @@ spec = do
     it "parses /help" $
       parseCommand "/help" `shouldBe` Right CmdHelp
 
-    -- Memories
-    it "parses /memories" $
-      parseCommand "/memories" `shouldBe` Right CmdMemories
-
-    it "parses /remember with a fact" $
-      parseCommand "/remember I love Haskell" `shouldBe` Right (CmdRemember "I love Haskell")
-
-    it "errors on bare /remember" $
-      parseCommand "/remember" `shouldSatisfy` isLeft
-
-    it "strips leading/trailing whitespace from remembered fact" $
-      parseCommand "/remember   trimmed fact   " `shouldBe` Right (CmdRemember "trimmed fact")
-
-    it "parses /forget with a valid index" $
-      parseCommand "/forget 3" `shouldBe` Right (CmdForget 3)
-
-    it "errors on /forget with non-numeric index" $
-      parseCommand "/forget abc" `shouldSatisfy` isLeft
-
-    it "errors on bare /forget" $
-      parseCommand "/forget" `shouldSatisfy` isLeft
+    -- Context
+    it "parses /context" $
+      parseCommand "/context" `shouldBe` Right CmdContext
 
     -- Session commands
     it "parses /session list" $
@@ -80,21 +62,21 @@ spec = do
     it "parses /session fork with a name" $
       parseCommand "/session fork backup" `shouldBe` Right (CmdSessionFork (Just "backup"))
 
-    -- Read / Run commands
-    it "parses /read without a question" $
-      parseCommand "/read src/Lib.hs" `shouldBe` Right (CmdRead "src/Lib.hs" Nothing)
-
-    it "parses /read with a question" $
-      parseCommand "/read src/Lib.hs explain the functions" `shouldBe` Right (CmdRead "src/Lib.hs" (Just "explain the functions"))
-
-    it "parses /read with double-quoted path and no question" $
-      parseCommand "/read \"my folder/file name.hs\"" `shouldBe` Right (CmdRead "my folder/file name.hs" Nothing)
-
-    it "parses /read with double-quoted path and a question" $
-      parseCommand "/read \"my folder/file name.hs\" explain this" `shouldBe` Right (CmdRead "my folder/file name.hs" (Just "explain this"))
-
-    it "errors on bare /read" $
-      parseCommand "/read" `shouldSatisfy` isLeft
+    -- File / Run commands
+    it "parses /file without a question" $
+      parseCommand "/file src/Lib.hs" `shouldBe` Right (CmdFile "src/Lib.hs" Nothing)
+ 
+    it "parses /file with a question" $
+      parseCommand "/file src/Lib.hs explain the functions" `shouldBe` Right (CmdFile "src/Lib.hs" (Just "explain the functions"))
+ 
+    it "parses /file with double-quoted path and no question" $
+      parseCommand "/file \"my folder/file name.hs\"" `shouldBe` Right (CmdFile "my folder/file name.hs" Nothing)
+ 
+    it "parses /file with double-quoted path and a question" $
+      parseCommand "/file \"my folder/file name.hs\" explain this" `shouldBe` Right (CmdFile "my folder/file name.hs" (Just "explain this"))
+ 
+    it "errors on bare /file" $
+      parseCommand "/file" `shouldSatisfy` isLeft
 
     it "parses /run with command" $
       parseCommand "/run cabal test" `shouldBe` Right (CmdRun "cabal test")
@@ -104,6 +86,30 @@ spec = do
 
     it "parses /clear" $
       parseCommand "/clear" `shouldBe` Right CmdClear
+
+    -- Prompt
+    it "parses /prompt without text" $
+      parseCommand "/prompt" `shouldBe` Right (CmdPrompt Nothing)
+
+    it "parses /prompt with custom system prompt" $
+      parseCommand "/prompt custom system prompt" `shouldBe` Right (CmdPrompt (Just "custom system prompt"))
+
+    -- Summary
+    it "parses /summary without text" $
+      parseCommand "/summary" `shouldBe` Right (CmdSummary Nothing)
+
+    it "parses /summary with custom instruction" $
+      parseCommand "/summary 保留我問過的話題" `shouldBe` Right (CmdSummary (Just "保留我問過的話題"))
+
+    -- Unfile
+    it "parses /unfile without arguments" $
+      parseCommand "/unfile" `shouldBe` Right (CmdUnfile Nothing)
+
+    it "parses /unfile with index" $
+      parseCommand "/unfile 2" `shouldBe` Right (CmdUnfile (Just "2"))
+
+    it "parses /unfile with filename" $
+      parseCommand "/unfile src/Lib.hs" `shouldBe` Right (CmdUnfile (Just "src/Lib.hs"))
 
     -- Unknown command
     it "errors on unknown command" $
@@ -119,16 +125,6 @@ spec = do
         case input of
           (c:_) -> c /= '/' ==> parseCommand (T.pack input) `shouldSatisfy` isLeft
           []    -> property True
-
-    it "any /remember with a non-whitespace fact parses successfully" $
-      property $ \(fact :: String) ->
-        not (T.null (T.strip (T.pack fact))) ==>
-          parseCommand (T.pack ("/remember " ++ fact)) `shouldSatisfy` isRight
-
-    it "any /forget with a positive integer parses successfully" $
-      property $ \(n :: Positive Int) ->
-        parseCommand (T.pack ("/forget " ++ show (getPositive n)))
-          `shouldBe` Right (CmdForget (getPositive n))
 
 -- ---------------------------------------------------------------------------
 -- Helper

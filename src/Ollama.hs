@@ -182,18 +182,32 @@ backendChatUrl :: ModelBackend -> String
 backendChatUrl (LocalOllama baseUrl)      = baseUrl ++ "/v1/chat/completions"
 backendChatUrl (RemoteOpenAI baseUrl _)   = baseUrl ++ "/chat/completions"
 
+prepareMessagesForLLM :: [Message] -> [Message]
+prepareMessagesForLLM = map prep
+  where
+    prep m = case attached_files m of
+      Nothing -> m
+      Just files ->
+        let formatFile (filePath, fileContent) =
+              "<AttachedFile filename=\"" ++ filePath ++ "\">\n"
+              ++ T.unpack fileContent ++ "\n</AttachedFile>\n\n"
+            extra = concatMap formatFile files
+            newContent = extra ++ T.unpack (content m)
+        in m { content = T.pack newContent, attached_files = Nothing }
+
 -- | Call the LLM with structured request, supporting function calling schemas.
 fetchChatResponseRaw :: Config -> ModelId -> [Message] -> IO (Either String Message)
 fetchChatResponseRaw config (ModelId modelStr) msgs = do
   let backend   = modelBackend config
       url       = backendChatUrl backend
       timeoutUs = httpTimeoutMicros config
+      preparedMsgs = prepareMessagesForLLM msgs
 
   (manager, extraHeaders) <- backendManagerAndHeaders backend
 
   let action = do
         initialRequest <- parseRequest url
-        let reqBody = ChatRequest modelStr msgs False (Just toolsSchema)
+        let reqBody = ChatRequest modelStr preparedMsgs False (Just toolsSchema)
             request = initialRequest
               { method          = "POST"
               , requestBody     = RequestBodyLBS (Aeson.encode reqBody)
@@ -210,7 +224,7 @@ fetchChatResponseRaw config (ModelId modelStr) msgs = do
 
   result <- try action
   case result of
-    Left (err :: SomeException) -> return (Left $ NetworkError (show err))
+    Left (err :: SomeException) -> return (Left $ "Network error: " ++ show err)
     Right val                   -> return val
 
 -- ---------------------------------------------------------------------------

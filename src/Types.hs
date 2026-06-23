@@ -95,10 +95,11 @@ instance FromJSON ToolCall where
              <*> v .: "function"
 
 data Message = Message
-  { role         :: Text
-  , content      :: Text
-  , tool_calls   :: Maybe [ToolCall]  -- LLM tool calling request
-  , tool_call_id :: Maybe Text        -- Tool response reference ID
+  { role          :: Text
+  , content       :: Text
+  , tool_calls    :: Maybe [ToolCall]  -- LLM tool calling request
+  , tool_call_id  :: Maybe Text        -- Tool response reference ID
+  , attached_files :: Maybe [(FilePath, Text)]
   } deriving (Show, Eq, Generic)
 
 instance ToJSON Message where
@@ -108,40 +109,71 @@ instance ToJSON Message where
     ]
     ++ maybe [] (\tcs -> ["tool_calls" .= tcs]) (tool_calls msg)
     ++ maybe [] (\tcid -> ["tool_call_id" .= tcid]) (tool_call_id msg)
+    ++ maybe [] (\afs -> ["attached_files" .= afs]) (attached_files msg)
 
 instance FromJSON Message where
-  parseJSON = Aeson.withObject "Message" $ \v ->
-    Message <$> v .: "role"
-            <*> v .: "content"
-            <*> v .:? "tool_calls"
-            <*> v .:? "tool_call_id"
+  parseJSON = Aeson.withObject "Message" $ \v -> do
+    r       <- v .: "role"
+    c       <- v .: "content"
+    tcs     <- v .:? "tool_calls"
+    tcid    <- v .:? "tool_call_id"
+    mSingle <- v .:? "attached_file"
+    mMulti  <- v .:? "attached_files"
+    let files = case mMulti of
+                  Just fs -> Just fs
+                  Nothing -> case mSingle of
+                               Just f  -> Just [f]
+                               Nothing -> Nothing
+    return (Message r c tcs tcid files)
 
 data Session = Session
-  { sessionId   :: SessionId
-  , sessionName :: SessionName
-  , messages    :: [Message]
+  { sessionId           :: SessionId
+  , sessionName         :: SessionName
+  , messages            :: [Message]
+  , sessionSystemPrompt :: Maybe Text
+  , sessionClearIndex   :: Maybe Int
   } deriving (Show, Eq, Generic)
 
-instance ToJSON Session
-instance FromJSON Session
+instance ToJSON Session where
+  toJSON s = Aeson.object
+    [ "sessionId"           .= sessionId s
+    , "sessionName"         .= sessionName s
+    , "messages"            .= messages s
+    , "sessionSystemPrompt" .= sessionSystemPrompt s
+    , "sessionClearIndex"   .= sessionClearIndex s
+    ]
+
+instance FromJSON Session where
+  parseJSON = Aeson.withObject "Session" $ \v ->
+    Session <$> v .: "sessionId"
+            <*> v .: "sessionName"
+            <*> v .: "messages"
+            <*> v .:? "sessionSystemPrompt"
+            <*> v .:? "sessionClearIndex"
 
 data AppState = AppState
-  { selectedModel    :: ModelId
-  , sessionHistory   :: [Message]
-  , longTermMemories :: [Text]
-  , currentSessionId :: SessionId
-  , sessions         :: [Session]
-  , loadedFile       :: Maybe (FilePath, Text)
+  { selectedModel      :: ModelId
+  , sessionHistory     :: [Message]
+  , currentSessionId   :: SessionId
+  , sessions           :: [Session]
+  , loadedFiles        :: [(FilePath, Text)]
+  , customSystemPrompt :: Maybe Text
+  , historyClearIndex  :: Int
   } deriving (Show, Eq)
 
 syncActiveSession :: AppState -> AppState
 syncActiveSession state =
   let activeId  = currentSessionId state
       history   = sessionHistory state
-      updatedSs = map (\s -> if sessionId s == activeId
-                               then s { messages = history }
-                               else s) (sessions state)
-  in state { sessions = updatedSs }
+      sysPrompt = customSystemPrompt state
+      clearIdx  = historyClearIndex state
+      updateSession s
+        | sessionId s == activeId = s { messages = history
+                                      , sessionSystemPrompt = sysPrompt
+                                      , sessionClearIndex = Just clearIdx
+                                      }
+        | otherwise               = s
+  in state { sessions = map updateSession (sessions state) }
 
 -- ---------------------------------------------------------------------------
 -- Configuration (Phase 4) — no more magic numbers in source
@@ -165,18 +197,19 @@ data Config = Config
 data Command
   = CmdExit                        -- /exit | /quit
   | CmdHelp                        -- /help
-  | CmdMemories                    -- /memories
-  | CmdRemember Text               -- /remember <fact>
-  | CmdForget Int                  -- /forget <1-based index>
+  | CmdContext                     -- /context
   | CmdSessionList                 -- /session list
   | CmdSessionNew (Maybe Text)     -- /session new [name]
   | CmdSessionLoad String          -- /session load <index_or_name>
   | CmdSessionRename String        -- /session rename <new_name>
   | CmdSessionDelete String        -- /session delete <index_or_name>
   | CmdSessionFork (Maybe Text)    -- /session fork [name]
-  | CmdRead FilePath (Maybe Text)  -- /read <file> [question]
+  | CmdFile FilePath (Maybe Text)  -- /file <file> [question]
   | CmdRun String                  -- /run <cmd>
   | CmdClear                       -- /clear
+  | CmdPrompt (Maybe Text)         -- /prompt [system prompt content]
+  | CmdSummary (Maybe Text)        -- /summary [instruction]
+  | CmdUnfile (Maybe String)
   deriving (Show, Eq)
 
 -- ---------------------------------------------------------------------------
@@ -186,18 +219,20 @@ data Command
 data CommandResult
   = ResExit
   | ResHelp
-  | ResMemories [Text]
-  | ResRemember Text
-  | ResForget Int [Text]
+  | ResContext String
   | ResSessionList [Session] SessionId
   | ResSessionNew SessionName SessionId
   | ResSessionLoad SessionName SessionId
   | ResSessionRename SessionName
   | ResSessionDelete SessionName SessionId
   | ResSessionFork SessionName SessionId
-  | ResRead FilePath
+  | ResFile FilePath
   | ResRun String
   | ResClear
+  | ResPrompt (Maybe Text)
+  | ResSummary Text
+  | ResUnfileSuccess FilePath
+  | ResUnfileList [(Int, FilePath)]
   deriving (Show, Eq)
 
 -- ---------------------------------------------------------------------------

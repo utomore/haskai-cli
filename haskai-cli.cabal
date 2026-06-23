@@ -34,19 +34,6 @@ library
     default-language: Haskell2010
     ghc-options:      -Wall -threaded
 
-executable haskai-server
-    main-is:          Main.hs
-    build-depends:    base >= 4.14 && < 5,
-                      haskai-cli,
-                      aeson,
-                      text,
-                      bytestring,
-                      directory,
-                      filepath,
-                      time
-    hs-source-dirs:   desktop/server
-    default-language: Haskell2010
-    ghc-options:      -Wall -threaded
 
 executable haskai-tui
     main-is:          Main.hs

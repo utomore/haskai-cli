@@ -68,7 +68,7 @@ getRowsOrDefault = do
     Nothing        -> return 24
 
 redrawLayout :: String -> String -> Int -> IO ()
-redrawLayout sessionNameVal modelName numMemories = do
+redrawLayout sessionNameVal modelName tokenCount = do
   rows <- getRowsOrDefault
   setCursorPosition 0 0
   setSGR [SetColor Foreground Vivid Blue, SetConsoleIntensity BoldIntensity]
@@ -85,7 +85,7 @@ redrawLayout sessionNameVal modelName numMemories = do
   setSGR [Reset]
   putStr " | "
   setSGR [SetColor Foreground Vivid Green]
-  putStr $ "Memories: " ++ show numMemories
+  putStr $ "Tokens: " ++ show tokenCount ++ " / 8000 (max)"
   setSGR [Reset]
   putStrLn " | Type /help for help"
   setCursorPosition 2 0
@@ -99,12 +99,12 @@ redrawLayout sessionNameVal modelName numMemories = do
   hFlush stdout
 
 initTerminalScreen :: String -> String -> Int -> IO ()
-initTerminalScreen sessionNameVal modelName numMemories = do
+initTerminalScreen sessionNameVal modelName tokenCount = do
   rows <- getRowsOrDefault
   clearScreen
   setCursorPosition 0 0
   mapM_ (\r -> setCursorPosition r 0 >> putStr "\ESC[2K") [3 .. rows - 3]
-  redrawLayout sessionNameVal modelName numMemories
+  redrawLayout sessionNameVal modelName tokenCount
   setCursorPosition (rows - 1) 0
   hFlush stdout
 
@@ -113,42 +113,42 @@ showSessionHistory = do
   env <- ask
   state <- liftIO $ readIORef (envState env)
   rows  <- liftIO getRowsOrDefault
+  tokenCount <- liftIO $ getContextTokenCount state
   let activeS    = currentSessionName state
       model      = unModelId (selectedModel state)
-      memsCount  = length (longTermMemories state)
   liftIO $ do
     clearScreen
-    redrawLayout activeS model memsCount
+    redrawLayout activeS model tokenCount
     putStr $ "\ESC[4;" ++ show (rows - 2) ++ "r"
     setCursorPosition (rows - 3) 0
     hFlush stdout
-  let history = sessionHistory state
+  let history = drop (historyClearIndex state) (sessionHistory state)
   liftIO $ do
     mapM_ (\msg ->
       if role msg == "user"
         then do
           setSGR [SetColor Foreground Vivid Green]
           putStr "User: "
-          setSGR [Reset]
           putStrLn (T.unpack (content msg))
+          setSGR [Reset]
         else if role msg == "assistant"
           then do
             setSGR [SetColor Foreground Vivid Cyan]
             putStr "Assistant: "
-            setSGR [Reset]
             putStrLn (T.unpack (content msg))
+            setSGR [Reset]
           else if role msg == "system"
             then do
               setSGR [SetColor Foreground Vivid Yellow]
               putStr "System: "
-              setSGR [Reset]
               putStrLn (T.unpack (content msg))
+              setSGR [Reset]
             else if role msg == "tool"
               then do
                 setSGR [SetColor Foreground Vivid Magenta]
                 putStr "Tool Output: "
-                setSGR [Reset]
                 putStrLn (T.unpack (content msg))
+                setSGR [Reset]
               else return ()
       ) history
     putStr "\ESC[r"
@@ -213,9 +213,7 @@ printHelp = do
   putStrLn " HaskAI CLI Help"
   putStrLn "=============================================================="
   putStrLn " /help             - Show this help message"
-  putStrLn " /memories         - List all stored long-term memories"
-  putStrLn " /remember <fact>  - Save a new fact to long-term memory"
-  putStrLn " /forget <index>   - Delete a memory by its list index"
+  putStrLn " /context          - Show current assembled context and sizes"
   putStrLn " /exit or /quit    - Exit the CLI tool"
   putStrLn " /session list     - List all sessions"
   putStrLn " /session new <n>  - Start a new session"
@@ -223,18 +221,12 @@ printHelp = do
   putStrLn " /session rename <r>- Rename the current session"
   putStrLn " /session delete <d>- Delete a session by index or name"
   putStrLn " /session fork <f> - Fork the current session"
-  putStrLn " /read <file> [q]  - Read a file and ask an optional question"
+  putStrLn " /file <file> [q]  - Read a file and ask an optional question"
+  putStrLn " /unfile           - Remove the loaded attached file from context"
   putStrLn " /run <command>    - Run a shell command on the local system"
-  putStrLn "=============================================================="
-
-printMemories :: [Text] -> IO ()
-printMemories mems = do
-  putStrLn "=============================================================="
-  putStrLn " Stored Memories:"
-  putStrLn "=============================================================="
-  if null mems
-    then putStrLn " No memories stored yet. Use /remember <fact> to add some!"
-    else mapM_ (\(i, m) -> putStrLn $ " [" ++ show i ++ "] " ++ T.unpack m) (zip [1 :: Int ..] mems)
+  putStrLn " /clear            - Clear current chat history view"
+  putStrLn " /prompt [text]    - Set custom system prompt (use \"default\" or \"clear\" to reset)"
+  putStrLn " /summary [inst]   - Summarize past conversation history with optional custom instructions"
   putStrLn "=============================================================="
 
 -- ---------------------------------------------------------------------------
@@ -243,12 +235,20 @@ printMemories mems = do
 
 presentCommandResult :: CommandResult -> AppM ()
 presentCommandResult res = case res of
-  ResExit -> liftIO $ putStrLn "Goodbye!"
-  ResHelp -> liftIO printHelp
-  ResMemories mems -> liftIO $ printMemories mems
-  ResRemember fact -> liftIO $ putStrLn $ "Memory saved: " ++ T.unpack fact
-  ResForget idx _ -> liftIO $ putStrLn $ "Memory [" ++ show idx ++ "] forgotten."
+  ResExit -> liftIO $ do
+    setSGR [SetColor Foreground Vivid Yellow]
+    putStrLn "Goodbye!"
+    setSGR [Reset]
+  ResHelp -> liftIO $ do
+    setSGR [SetColor Foreground Vivid Yellow]
+    printHelp
+    setSGR [Reset]
+  ResContext details -> liftIO $ do
+    setSGR [SetColor Foreground Vivid Yellow]
+    putStrLn details
+    setSGR [Reset]
   ResSessionList sessions activeId -> liftIO $ do
+    setSGR [SetColor Foreground Vivid Yellow]
     putStrLn "=============================================================="
     putStrLn " Sessions list:"
     putStrLn "=============================================================="
@@ -260,17 +260,54 @@ presentCommandResult res = case res of
                          ++ show (length (messages s)) ++ " messages"
       ) (zip [1 :: Int ..] sessions)
     putStrLn "=============================================================="
+    setSGR [Reset]
   ResSessionNew _ _ -> showSessionHistory
   ResSessionLoad _ _ -> showSessionHistory
   ResSessionRename (SessionName newName) -> do
     env <- ask
     state <- liftIO $ readIORef (envState env)
-    liftIO $ redrawLayout newName (unModelId (selectedModel state)) (length (longTermMemories state))
+    tokenCount <- liftIO $ getContextTokenCount state
+    liftIO $ do
+      setSGR [SetColor Foreground Vivid Yellow]
+      redrawLayout newName (unModelId (selectedModel state)) tokenCount
+      setSGR [Reset]
   ResSessionDelete _ _ -> showSessionHistory
   ResSessionFork _ _ -> showSessionHistory
-  ResRead path -> liftIO $ putStrLn $ "File loaded successfully: " ++ path
-  ResRun output -> liftIO $ putStrLn $ "Command execution result:\n" ++ output
+  ResFile path -> liftIO $ do
+    setSGR [SetColor Foreground Vivid Yellow]
+    putStrLn $ "File loaded successfully: " ++ path
+    setSGR [Reset]
+  ResRun output -> liftIO $ do
+    setSGR [SetColor Foreground Vivid Yellow]
+    putStrLn $ "Command execution result:\n" ++ output
+    setSGR [Reset]
   ResClear -> showSessionHistory
+  ResPrompt mbText -> liftIO $ do
+    setSGR [SetColor Foreground Vivid Yellow]
+    case mbText of
+      Nothing -> putStrLn "目前的 System Prompt 內容: (使用預設系統 Prompt)"
+      Just t  -> putStrLn $ "System Prompt 已設定為:\n" ++ T.unpack t
+    setSGR [Reset]
+  ResSummary summaryText -> liftIO $ do
+    setSGR [SetColor Foreground Vivid Yellow]
+    putStr "System: "
+    putStrLn "已成功手動壓縮總結歷史記憶。"
+    putStrLn $ "總結內容:\n" ++ T.unpack summaryText
+    setSGR [Reset]
+  ResUnfileSuccess path -> liftIO $ do
+    setSGR [SetColor Foreground Vivid Yellow]
+    putStr "System: "
+    putStrLn $ "已移除夾帶檔案: " ++ path
+    setSGR [Reset]
+  ResUnfileList files -> liftIO $ do
+    setSGR [SetColor Foreground Vivid Yellow]
+    if null files
+      then putStrLn "目前沒有夾帶任何檔案。"
+      else do
+        putStrLn "目前夾帶的檔案:"
+        mapM_ (\(i, path) -> putStrLn $ "  [" ++ show i ++ "] " ++ path) files
+        putStrLn "請使用 `/unfile <編號或檔案名稱>` 來移除指定檔案。"
+    setSGR [Reset]
 
 -- ---------------------------------------------------------------------------
 -- CLI Shell loop
@@ -282,9 +319,9 @@ loop = do
   let config = envConfig env
   state <- liftIO $ readIORef (envState env)
   rows  <- liftIO getRowsOrDefault
+  tokenCount <- liftIO $ getContextTokenCount state
   let activeS    = currentSessionName state
       modelStr   = unModelId (selectedModel state)
-      memsCount  = length (longTermMemories state)
       promptStr  = "haskai-cli [" ++ activeS ++ "]> "
       promptCol  = length promptStr
 
@@ -299,7 +336,7 @@ loop = do
           then do
             -- Reset terminal scrolls before executing command
             liftIO $ do
-              redrawLayout activeS modelStr memsCount
+              redrawLayout activeS modelStr tokenCount
               setCursorPosition (rows - 1) 0
               putStr "\ESC[2K"
               putStr promptStr
@@ -309,7 +346,7 @@ loop = do
             case parseCommand (T.pack trimmed) of
               Left errMsg -> do
                 liftIO $ do
-                  putStrLn errMsg
+                  putStrLn (displayError errMsg)
                   putStr "\ESC[r"
                   setCursorPosition (rows - 1) 0
                   putStr "\ESC[2K"
@@ -326,10 +363,10 @@ loop = do
                 case execRes of
                   Left err -> liftIO (putStrLn $ "Error: " ++ err) >> loop
                   Right ResExit -> liftIO $ putStrLn "Goodbye!"
-                  Right (ResRead path) -> do
+                  Right (ResFile path) -> do
                     -- In CLI, if there's a question suffix or even if not, run executeAgentChat
                     case cmd of
-                      CmdRead _ mQuest -> do
+                      CmdFile _ mQuest -> do
                         let qText = fromMaybe "請分析此檔案內容。" mQuest
                         runChat qText rows promptCol
                         loop
@@ -344,13 +381,13 @@ runChat userText rows promptCol = do
   env <- ask
   let config = envConfig env
   state <- liftIO $ readIORef (envState env)
+  tokenCount <- liftIO $ getContextTokenCount state
   let activeS    = currentSessionName state
       modelStr   = unModelId (selectedModel state)
-      memsCount  = length (longTermMemories state)
       promptStr  = "haskai-cli [" ++ activeS ++ "]> "
 
   liftIO $ do
-    redrawLayout activeS modelStr memsCount
+    redrawLayout activeS modelStr tokenCount
     setCursorPosition (rows - 1) 0
     putStr "\ESC[2K"
     putStr promptStr
@@ -366,8 +403,8 @@ runChat userText rows promptCol = do
           then do
             setSGR [SetColor Foreground Vivid Green]
             putStr "User: "
-            setSGR [Reset]
             putStrLn (T.unpack c)
+            setSGR [Reset]
             hFlush stdout
           else if r == "assistant"
             then case tool_calls msg of
@@ -381,8 +418,8 @@ runChat userText rows promptCol = do
               _ -> do
                 setSGR [SetColor Foreground Vivid Cyan]
                 putStr "Assistant: "
-                setSGR [Reset]
                 putStrLn (T.unpack c)
+                setSGR [Reset]
                 hFlush stdout
             else if r == "tool"
               then do
@@ -428,10 +465,10 @@ haskaiSettings = (defaultSettings :: Settings IO)
   }
   where
     allCmds =
-      [ "/help", "/memories", "/remember", "/forget", "/exit", "/quit"
+      [ "/help", "/context", "/exit", "/quit"
       , "/session list", "/session new", "/session load"
       , "/session rename", "/session delete", "/session fork"
-      , "/read", "/run", "/clear"
+      , "/file", "/run", "/clear", "/prompt", "/summary", "/unfile"
       ]
 
 -- ---------------------------------------------------------------------------
@@ -455,16 +492,23 @@ main = do
 
   (initialSessions, currentId) <- if null loadedSs
     then do
-      let defSession = Session (SessionId "default") (SessionName "Default Session") []
+      let defSession = Session (SessionId "default") (SessionName "Default Session") [] Nothing (Just 0)
       saveSessions sessionsPath [defSession]
       return ([defSession], SessionId "default")
     else case loadedSs of
       (firstS:_) -> return (loadedSs, sessionId firstS)
       []         -> return ([], SessionId "default")
 
-  let activeHistory = case filter (\s -> sessionId s == currentId) initialSessions of
+  let activeSession = filter (\s -> sessionId s == currentId) initialSessions
+      activeHistory = case activeSession of
         (s:_) -> messages s
         []    -> []
+      activeSysPrompt = case activeSession of
+        (s:_) -> sessionSystemPrompt s
+        []    -> Nothing
+      activeClearIdx = case activeSession of
+        (s:_) -> fromMaybe 0 (sessionClearIndex s)
+        []    -> 0
 
   putStrLn "Checking available models..."
   selected <- selectModel config
@@ -474,10 +518,12 @@ main = do
                       []    -> "Default Session"
       modelStr    = unModelId selected
 
-  let initialState = AppState selected activeHistory mems currentId initialSessions Nothing
+  let initialState = AppState selected activeHistory currentId initialSessions [] activeSysPrompt activeClearIdx
 
   stateRef <- newIORef initialState
   let env = Env config stateRef
 
+  tokenCount <- getContextTokenCount initialState
+
   runInputT haskaiSettings $
-    runReaderT (liftIO (initTerminalScreen activeSName modelStr (length mems)) >> loop) env
+    runReaderT (liftIO (initTerminalScreen activeSName modelStr tokenCount) >> loop) env
